@@ -19,17 +19,16 @@ import {
   FormatListBulleted,
   ZoomIn,
   ZoomOut,
-  VerticalAlignTop,
-  VerticalAlignBottom,
   Height,
-  MenuBook,
-  RotateLeft,
-  RotateRight,
   Delete,
   Circle,
+  UploadFile,
 } from "@mui/icons-material";
 import { MOCK_QUESTIONS } from "../../constants";
 import { ToolMode } from "../../types";
+
+// 【重要】トップレベルでの pdfjs-dist のインポートと設定は削除しました。
+// これによりサーバーサイドでの実行エラー(DOMMatrix undefined)を防ぎます。
 
 interface QuestionPanelProps {
   width: number;
@@ -106,6 +105,10 @@ export const QuestionPanel: React.FC<QuestionPanelProps> = ({ width }) => {
   const [currentTool, setCurrentTool] = useState<ToolMode>(ToolMode.SELECT);
   const [content, setContent] = useState(MOCK_QUESTIONS[0].content);
 
+  // PDF読み込み状態
+  const [isLoading, setIsLoading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   // Marker State
   const [markerColor, setMarkerColor] = useState(MARKER_COLORS[0].value);
   const [colorMenuAnchor, setColorMenuAnchor] = useState<null | HTMLElement>(
@@ -117,15 +120,188 @@ export const QuestionPanel: React.FC<QuestionPanelProps> = ({ width }) => {
     useState<HTMLElement | null>(null);
   const [markerPopoverAnchor, setMarkerPopoverAnchor] =
     useState<null | HTMLElement>(null);
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
 
   const contentRef = useRef<HTMLDivElement>(null);
+
+  // --- PDF アップロード処理 (修正版) ---
+  const handleFileUpload = async (
+    event: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    if (file.type !== "application/pdf") {
+      alert("PDFファイルを選択してください。");
+      return;
+    }
+
+    setIsLoading(true);
+
+    try {
+      // 動的インポート
+      const pdfjsLib = await import("pdfjs-dist");
+
+      // 【修正】Workerの設定
+      // 1. httpsを指定
+      // 2. cdnjsではなくnpmパッケージ構造と一致するunpkgを使用
+      // 3. .min.js ではなく .min.mjs (ES Module) を指定
+      pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
+
+      const arrayBuffer = await file.arrayBuffer();
+
+      // 日本語フォント等が含まれるPDFの文字化けを防ぐための標準フォント設定（オプション）
+      const loadingTask = pdfjsLib.getDocument({
+        data: arrayBuffer,
+        cMapUrl: `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/cmaps/`,
+        cMapPacked: true,
+      });
+
+      const pdf = await loadingTask.promise;
+
+      let fullHtml = "";
+
+      // ---------------------------------------------------------
+      // handleFileUpload 関数内の forループ部分を以下のように修正してください
+      // ---------------------------------------------------------
+
+      // 全ページをループしてテキストを抽出
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const textContent = await page.getTextContent();
+
+        let pageText = "";
+        let lastY = -1;
+
+        // 追加: X座標計算用の変数
+        let lastX = 0;
+        let lastWidth = 0;
+
+        let lastStr = "";
+        // -----------------------------------------------------------
+        // テキスト抽出ループ (修正版：行間が広いPDF対応)
+        // -----------------------------------------------------------
+
+        // -----------------------------------------------------------
+        // テキスト抽出ループ (修正版：見出し対応・窮屈さ解消)
+        // -----------------------------------------------------------
+
+        // -----------------------------------------------------------
+        // テキスト抽出ループ (修正版：X座標計算による空白再現)
+        // -----------------------------------------------------------
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        textContent.items.forEach((item: any) => {
+          const str = item.str;
+          const currentY = item.transform[5]; // Y座標
+          const currentX = item.transform[4]; // X座標
+          const fontSize = item.transform[0]; // フォントサイズ
+          const itemWidth = item.width || 0; // 文字の幅
+
+          // 最初のアイテム
+          if (lastY === -1) {
+            pageText += str;
+          } else {
+            const diffY = Math.abs(currentY - lastY);
+
+            // --- 行が変わったかどうかの判定 ---
+            const isNewLine = diffY > fontSize * 0.5;
+
+            if (isNewLine) {
+              // ... (前回までの改行ロジック) ...
+
+              // 1. 空行判定 (閾値2.0倍)
+              const hasBlankLine = diffY > fontSize * 2.0;
+              // 2. 文末判定
+              const isSentenceEnd = /[。！？!?\]】）〕]$/.test(lastStr.trim());
+              // 3. 見出し開始判定
+              const isHeaderStart = /^[〔【\[]/.test(str.trim());
+              // 4. ページ番号判定
+              const isPageNumber = /^- \d+ -$/.test(str.trim());
+
+              if (isPageNumber) {
+                pageText +=
+                  "<br/><div style='text-align:center; font-size:0.8em;'>" +
+                  str +
+                  "</div>";
+              } else if (hasBlankLine || isHeaderStart) {
+                pageText += "<br/><br/>" + str;
+              } else if (isSentenceEnd) {
+                pageText += "<br/>" + str;
+              } else {
+                pageText += str;
+              }
+            } else {
+              // --- 【ここが今回の修正ポイント】同じ行内での水平方向の隙間埋め ---
+
+              // 前の文字の「右端」の座標を計算
+              const endOfLastItem = lastX + lastWidth;
+              // 現在の文字の「左端」との距離 (ギャップ)
+              const gap = currentX - endOfLastItem;
+
+              // ギャップが「フォントサイズの20%」より大きい場合、空白があるとみなす
+              // (PDFの座標ズレを考慮して少し余裕を持たせる)
+              if (gap > fontSize * 0.2) {
+                // 埋めるべきスペースの数を概算 (スペース1つあたりフォントの0.4倍幅と仮定)
+                const spaceCount = Math.floor(gap / (fontSize * 0.4));
+
+                if (spaceCount > 0) {
+                  // HTMLの &nbsp; (改行されないスペース) を挿入して隙間を作る
+                  pageText += "&nbsp;".repeat(spaceCount);
+                }
+              }
+
+              pageText += str;
+            }
+          }
+
+          // 座標と文字情報を更新
+          lastY = currentY;
+          lastX = currentX;
+          lastWidth = itemWidth;
+          lastStr = str;
+        });
+        // -----------------------------------------------------------
+        // -----------------------------------------------------------
+        // -----------------------------------------------------------
+
+        // ページごとにコンテナで囲む
+        fullHtml += `
+          <div class="pdf-page" style="margin-bottom: 32px; padding: 16px; background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+            <div style="margin-bottom: 8px; font-size: 0.8em; color: gray;">Page ${i}</div>
+            <div style="line-height: 1.8; text-align: justify;">${
+              pageText || "<br/>"
+            }</div>
+          </div>
+        `;
+      }
+
+      setContent(fullHtml);
+    } catch (error) {
+      console.error("PDF parsing error:", error);
+      alert(
+        "PDFの読み込みに失敗しました。\n詳細: " +
+          (error instanceof Error ? error.message : String(error))
+      );
+    } finally {
+      setIsLoading(false);
+      // Inputをリセット
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+    }
+  };
+
+  const triggerFileUpload = () => {
+    fileInputRef.current?.click();
+  };
+  // ---------------------------
 
   const handleToolClick = (
     tool: ToolMode,
     event: React.MouseEvent<HTMLButtonElement>
   ) => {
     if (tool === ToolMode.MARKER && currentTool === ToolMode.MARKER) {
-      // If clicking marker again, open color menu
       setColorMenuAnchor(event.currentTarget);
     } else {
       setCurrentTool(tool);
@@ -135,6 +311,32 @@ export const QuestionPanel: React.FC<QuestionPanelProps> = ({ width }) => {
   const handleColorSelect = (colorValue: string) => {
     setMarkerColor(colorValue);
     setColorMenuAnchor(null);
+  };
+
+  const getTextNodesInRange = (range: Range): Text[] => {
+    const textNodes: Text[] = [];
+    const root = range.commonAncestorContainer;
+
+    if (root.nodeType === Node.TEXT_NODE) {
+      textNodes.push(root as Text);
+      return textNodes;
+    }
+
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode: (node) => {
+        if (range.intersectsNode(node)) {
+          return NodeFilter.FILTER_ACCEPT;
+        }
+        return NodeFilter.FILTER_REJECT;
+      },
+    });
+
+    let currentNode = walker.nextNode();
+    while (currentNode) {
+      textNodes.push(currentNode as Text);
+      currentNode = walker.nextNode();
+    }
+    return textNodes;
   };
 
   const handleMouseUp = () => {
@@ -147,67 +349,90 @@ export const QuestionPanel: React.FC<QuestionPanelProps> = ({ width }) => {
     const range = selection.getRangeAt(0);
     const container = contentRef.current;
 
-    // Ensure selection is within the content area
     if (!container || !container.contains(range.commonAncestorContainer))
       return;
 
     try {
-      // Create highlight span
-      const span = document.createElement("span");
-      span.style.backgroundColor = markerColor;
-      span.setAttribute("data-marker", "true");
-      span.style.cursor = "pointer";
+      const groupId = `marker-group-${Date.now()}-${Math.floor(
+        Math.random() * 10000
+      )}`;
 
-      // Surround contents
-      range.surroundContents(span);
+      const textNodes = getTextNodesInRange(range);
+
+      textNodes.forEach((textNode) => {
+        const subRange = document.createRange();
+        subRange.selectNodeContents(textNode);
+
+        if (textNode === range.startContainer) {
+          subRange.setStart(textNode, range.startOffset);
+        }
+        if (textNode === range.endContainer) {
+          subRange.setEnd(textNode, range.endOffset);
+        }
+
+        if (!subRange.collapsed) {
+          const span = document.createElement("span");
+          span.style.backgroundColor = markerColor;
+          span.setAttribute("data-marker", "true");
+          span.setAttribute("data-group-id", groupId);
+          span.style.cursor = "pointer";
+          span.className = "marker-highlight";
+
+          try {
+            subRange.surroundContents(span);
+          } catch (e) {
+            console.warn("Skipping a node due to structure complexity");
+          }
+        }
+      });
+
       selection.removeAllRanges();
 
-      // Update internal state content
-      setContent(container.innerHTML);
+      if (container) {
+        setContent(container.innerHTML);
+      }
     } catch (e) {
-      console.warn(
-        "Could not highlight selection. Selection might cross block boundaries."
-      );
-      // In a real app, complex range handling would be needed here.
+      console.warn("Highlight failed:", e);
     }
   };
 
   const handleContentClick = (e: React.MouseEvent) => {
     const target = e.target as HTMLElement;
-    // Check if clicked element is a marker
     if (
       target.tagName === "SPAN" &&
       target.getAttribute("data-marker") === "true"
     ) {
-      // Open popover to delete/edit
       setSelectedMarkerElement(target);
       setMarkerPopoverAnchor(target);
+      const groupId = target.getAttribute("data-group-id");
+      setSelectedGroupId(groupId);
       e.stopPropagation();
     }
   };
 
   const handleDeleteMarker = () => {
-    if (selectedMarkerElement && contentRef.current) {
-      const parent = selectedMarkerElement.parentNode;
-      if (parent) {
-        // Unwrap the span
-        while (selectedMarkerElement.firstChild) {
-          parent.insertBefore(
-            selectedMarkerElement.firstChild,
-            selectedMarkerElement
-          );
+    const container = contentRef.current;
+    if (container && selectedGroupId) {
+      const markers = container.querySelectorAll(
+        `span[data-group-id="${selectedGroupId}"]`
+      );
+      markers.forEach((marker) => {
+        const parent = marker.parentNode;
+        if (parent) {
+          while (marker.firstChild) {
+            parent.insertBefore(marker.firstChild, marker);
+          }
+          parent.removeChild(marker);
         }
-        parent.removeChild(selectedMarkerElement);
-
-        // Update state
-        setContent(contentRef.current.innerHTML);
-      }
+      });
+      container.normalize();
+      setContent(container.innerHTML);
     }
     setMarkerPopoverAnchor(null);
     setSelectedMarkerElement(null);
+    setSelectedGroupId(null);
   };
 
-  // Determine active marker color for icon display
   const activeColorObj =
     MARKER_COLORS.find((c) => c.value === markerColor) || MARKER_COLORS[0];
 
@@ -224,6 +449,15 @@ export const QuestionPanel: React.FC<QuestionPanelProps> = ({ width }) => {
         position: "relative",
       }}
     >
+      {/* 隠し input 要素 */}
+      <input
+        type="file"
+        ref={fileInputRef}
+        onChange={handleFileUpload}
+        style={{ display: "none" }}
+        accept="application/pdf"
+      />
+
       {/* Header Info Bar */}
       <Box
         sx={{
@@ -239,26 +473,28 @@ export const QuestionPanel: React.FC<QuestionPanelProps> = ({ width }) => {
         }}
       >
         <Typography variant="caption" sx={{ fontWeight: "bold" }}>
-          第１問
+          {isLoading ? "読み込み中..." : "第１問"}
         </Typography>
         <Typography variant="caption" color="text.secondary">
-          0/184行 0/5,520文字 (空白含む)
+          PDFモード
         </Typography>
         <Box sx={{ display: "flex", gap: 0.5 }}>
+          {/* PDFアップロードボタン */}
           <Button
             size="small"
-            variant="outlined"
+            variant="contained"
+            startIcon={<UploadFile />}
+            onClick={triggerFileUpload}
+            disabled={isLoading}
             sx={{
               px: 1,
               py: 0,
               minWidth: 0,
               height: 24,
               fontSize: "10px",
-              borderColor: "grey.300",
-              color: "text.primary",
             }}
           >
-            検索
+            PDF読込
           </Button>
           <Button
             size="small"
@@ -273,7 +509,7 @@ export const QuestionPanel: React.FC<QuestionPanelProps> = ({ width }) => {
               color: "text.primary",
             }}
           >
-            置換
+            検索
           </Button>
         </Box>
       </Box>
@@ -318,7 +554,6 @@ export const QuestionPanel: React.FC<QuestionPanelProps> = ({ width }) => {
 
           <Divider sx={{ width: "60%", my: 0.5 }} />
 
-          {/* Marker Tool with Dynamic Color Icon */}
           <ToolBtn
             tool={ToolMode.MARKER}
             icon={
@@ -399,85 +634,6 @@ export const QuestionPanel: React.FC<QuestionPanelProps> = ({ width }) => {
             currentTool={currentTool}
             onClick={() => {}}
           />
-
-          <Divider sx={{ width: "60%", my: 0.5 }} />
-
-          {/* Pagination */}
-          <Box
-            sx={{
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              gap: 0.5,
-              mb: 1,
-            }}
-          >
-            <Box
-              sx={{
-                width: 24,
-                height: 24,
-                bgcolor: "grey.700",
-                color: "white",
-                borderRadius: 1,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                fontSize: 10,
-                fontWeight: "bold",
-              }}
-            >
-              1
-            </Box>
-            <Box
-              sx={{
-                width: 24,
-                height: 24,
-                bgcolor: "grey.400",
-                color: "white",
-                borderRadius: 1,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                fontSize: 10,
-                fontWeight: "bold",
-              }}
-            >
-              4
-            </Box>
-          </Box>
-
-          <Divider sx={{ width: "60%", my: 0.5 }} />
-
-          <ToolBtn
-            icon={<VerticalAlignTop sx={{ fontSize: 18 }} />}
-            currentTool={currentTool}
-            onClick={() => {}}
-          />
-          <ToolBtn
-            icon={<VerticalAlignBottom sx={{ fontSize: 18 }} />}
-            currentTool={currentTool}
-            onClick={() => {}}
-          />
-          <ToolBtn
-            icon={<MenuBook sx={{ fontSize: 18 }} />}
-            currentTool={currentTool}
-            onClick={() => {}}
-          />
-
-          <Box
-            sx={{ mt: "auto", pb: 1, display: "flex", flexDirection: "column" }}
-          >
-            <ToolBtn
-              icon={<RotateLeft sx={{ fontSize: 18 }} />}
-              currentTool={currentTool}
-              onClick={() => {}}
-            />
-            <ToolBtn
-              icon={<RotateRight sx={{ fontSize: 18 }} />}
-              currentTool={currentTool}
-              onClick={() => {}}
-            />
-          </Box>
         </Paper>
 
         {/* Content Area */}
@@ -502,16 +658,27 @@ export const QuestionPanel: React.FC<QuestionPanelProps> = ({ width }) => {
               transform: `scale(${zoom / 100})`,
               transformOrigin: "top left",
               marginBottom: `${(zoom - 100) * 8}px`,
-              // Ensure spans created by highlighter are visible
+              "& .pdf-page": {
+                fontFamily: "sans-serif",
+              },
               "& .marker-highlight": {
                 mixBlendMode: "multiply",
               },
             }}
-            ref={contentRef}
             onMouseUp={handleMouseUp}
             onClick={handleContentClick}
           >
-            <div dangerouslySetInnerHTML={{ __html: content }} />
+            {isLoading ? (
+              <Typography color="text.secondary" align="center" sx={{ mt: 4 }}>
+                PDFを解析中...
+              </Typography>
+            ) : (
+              <div
+                ref={contentRef}
+                dangerouslySetInnerHTML={{ __html: content }}
+                style={{ outline: "none", minHeight: "100%" }}
+              />
+            )}
           </Paper>
         </Box>
       </Box>
@@ -566,7 +733,6 @@ export const QuestionPanel: React.FC<QuestionPanelProps> = ({ width }) => {
           >
             削除
           </Button>
-          {/* We could add color changing here too if needed */}
         </Box>
       </Popover>
     </Box>
