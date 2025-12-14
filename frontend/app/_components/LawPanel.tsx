@@ -150,7 +150,9 @@ export const LawPanel: React.FC = () => {
       const lawId = foundButton.link.replace(/^\//, "");
       setSelectedLawId(lawId);
       try {
-        const res = await fetch(`http://localhost:3000/api?lawId=${lawId}`);
+        const res = await fetch(
+          `https://law-cbt.vercel.app/api?lawId=${lawId}`
+        );
         if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
         const json = await res.json();
         setLawData(json);
