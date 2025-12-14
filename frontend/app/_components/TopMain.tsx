@@ -299,7 +299,7 @@ const TopMain: React.FC<TopMainProps> = ({
         {data && (
           <Box
             sx={{
-              p: 2,
+              p: 1,
               // my: 2.5,
               // border: 1,
               // borderColor: "#D1D5DB",
