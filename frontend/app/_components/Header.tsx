@@ -1,5 +1,16 @@
-import React, { memo } from "react";
-import { AppBar, Toolbar, Box, Typography, Button } from "@mui/material";
+// Header.tsx
+import React, { memo, useState } from "react";
+import {
+  AppBar,
+  Toolbar,
+  Box,
+  Typography,
+  Button,
+  Menu,
+  MenuItem,
+  ListItemIcon,
+  ListItemText,
+} from "@mui/material";
 import {
   EditNote,
   Description,
@@ -15,9 +26,10 @@ import {
   Palette,
   FilterAlt,
   HelpOutline,
+  Check, // ▼ 追加
 } from "@mui/icons-material";
-import { ToolbarButton } from "./ToolbarButton"; // パスは環境に合わせて調整してください
-import { PanelType } from "../../types"; // パスは環境に合わせて調整してください
+import { ToolbarButton } from "./ToolbarButton";
+import { PanelType, ColorSchemeType } from "../../type/type";
 
 interface HeaderProps {
   timeLeft: number;
@@ -26,6 +38,11 @@ interface HeaderProps {
   visiblePanels: PanelType[];
   onTogglePanel: (type: PanelType) => void;
   onSwapPanels: () => void;
+  // ▼ 追加: 配色変更用プロップス
+  colorScheme: ColorSchemeType;
+  onChangeColorScheme: (scheme: ColorSchemeType) => void;
+  onFinish: () => void; // ★ 追加
+  onClick?: (event: React.MouseEvent<HTMLButtonElement>) => void;
 }
 
 export const Header: React.FC<HeaderProps> = memo(
@@ -36,8 +53,11 @@ export const Header: React.FC<HeaderProps> = memo(
     visiblePanels,
     onTogglePanel,
     onSwapPanels,
+    colorScheme,
+    onChangeColorScheme,
+    onFinish, // ★ 受け取り
   }) => {
-    // 時間フォーマット関数（ヘッダー内でのみ使用するためここに移動）
+    // 時間フォーマット関数
     const formatTime = (seconds: number) => {
       const h = Math.floor(seconds / 3600);
       const m = Math.floor((seconds % 3600) / 60);
@@ -48,6 +68,25 @@ export const Header: React.FC<HeaderProps> = memo(
     };
 
     const isVisible = (type: PanelType) => visiblePanels.includes(type);
+
+    // ▼ 追加: 配色メニュー用のState
+    const [paletteAnchorEl, setPaletteAnchorEl] = useState<null | HTMLElement>(
+      null
+    );
+    const isPaletteOpen = Boolean(paletteAnchorEl);
+
+    const handlePaletteClick = (event: React.MouseEvent<HTMLButtonElement>) => {
+      setPaletteAnchorEl(event.currentTarget);
+    };
+
+    const handlePaletteClose = () => {
+      setPaletteAnchorEl(null);
+    };
+
+    const handleColorSelect = (scheme: ColorSchemeType) => {
+      onChangeColorScheme(scheme);
+      handlePaletteClose();
+    };
 
     return (
       <AppBar
@@ -180,10 +219,15 @@ export const Header: React.FC<HeaderProps> = memo(
               icon={<FilterAlt sx={{ fontSize: 18 }} />}
               label="フィルタ"
             />
+
+            {/* ▼ 変更: 配色ボタンの機能実装 */}
             <ToolbarButton
               icon={<Palette sx={{ fontSize: 18 }} />}
               label="配色"
+              onClick={handlePaletteClick}
+              active={isPaletteOpen}
             />
+
             <ToolbarButton
               icon={<HelpOutline sx={{ fontSize: 18 }} />}
               label="使い方"
@@ -231,11 +275,46 @@ export const Header: React.FC<HeaderProps> = memo(
                 boxShadow: 2,
                 px: 3,
               }}
+              onClick={onFinish} // ★ 追加
             >
               終了
             </Button>
           </Box>
         </Toolbar>
+
+        {/* ▼ 追加: 配色選択メニュー */}
+        <Menu
+          anchorEl={paletteAnchorEl}
+          open={isPaletteOpen}
+          onClose={handlePaletteClose}
+          anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
+          transformOrigin={{ vertical: "top", horizontal: "left" }}
+        >
+          <MenuItem onClick={() => handleColorSelect("none")}>
+            <ListItemIcon>
+              {colorScheme === "none" && <Check fontSize="small" />}
+            </ListItemIcon>
+            <ListItemText>なし</ListItemText>
+          </MenuItem>
+          <MenuItem onClick={() => handleColorSelect("yellow")}>
+            <ListItemIcon>
+              {colorScheme === "yellow" && <Check fontSize="small" />}
+            </ListItemIcon>
+            <ListItemText>黄背景</ListItemText>
+          </MenuItem>
+          <MenuItem onClick={() => handleColorSelect("blue")}>
+            <ListItemIcon>
+              {colorScheme === "blue" && <Check fontSize="small" />}
+            </ListItemIcon>
+            <ListItemText>青背景</ListItemText>
+          </MenuItem>
+          <MenuItem onClick={() => handleColorSelect("black")}>
+            <ListItemIcon>
+              {colorScheme === "black" && <Check fontSize="small" />}
+            </ListItemIcon>
+            <ListItemText>黒背景</ListItemText>
+          </MenuItem>
+        </Menu>
       </AppBar>
     );
   }

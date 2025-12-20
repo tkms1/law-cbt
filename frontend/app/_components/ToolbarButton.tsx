@@ -1,59 +1,67 @@
 import React from "react";
-import { Button, Typography, Box } from "@mui/material";
+import { Button, Box, Typography } from "@mui/material";
 
 interface ToolbarButtonProps {
   icon: React.ReactNode;
-  label?: string;
-  onClick?: () => void;
-  active?: boolean;
-  className?: string;
-  color?: string; // Hex color for custom background
+  label: string;
   subLabel?: string;
+  active?: boolean;
+  color?: string;
+  // ▼ 修正箇所: onClickでイベント情報を受け取れるように型定義を変更しました
+  onClick?: (event: React.MouseEvent<HTMLButtonElement>) => void;
 }
 
 export const ToolbarButton: React.FC<ToolbarButtonProps> = ({
   icon,
   label,
-  onClick,
+  subLabel,
   active,
   color,
-  subLabel,
+  onClick,
 }) => {
   return (
     <Button
+      // ButtonコンポーネントのonClickイベントをそのまま渡します
       onClick={onClick}
-      variant={active ? "contained" : "text"}
       sx={{
+        minWidth: 48,
+        height: "100%",
         display: "flex",
         flexDirection: "column",
-        alignItems: "center",
         justifyContent: "center",
-        minWidth: "3.5rem",
-        height: "100%",
-        padding: "4px 8px",
+        alignItems: "center",
+        color: active ? "white" : "rgba(255,255,255,0.7)",
+        bgcolor: active ? "rgba(255,255,255,0.1)" : "transparent",
         borderRadius: 0,
-        color: active ? "white" : "white",
-        backgroundColor: active ? "primary.dark" : color || "transparent",
-        borderRight: "1px solid rgba(255,255,255,0.2)",
+        px: 1,
+        borderBottom: active ? "3px solid #f50057" : "3px solid transparent",
+        textTransform: "none",
         "&:hover": {
-          backgroundColor: active ? "primary.dark" : "rgba(255,255,255,0.1)",
+          bgcolor: "rgba(255,255,255,0.1)",
+          color: "white",
         },
       }}
     >
-      <Box sx={{ mb: 0.5, display: "flex" }}>{icon}</Box>
-      {label && (
-        <Typography variant="caption" sx={{ lineHeight: 1, fontSize: "10px" }}>
-          {label}
-        </Typography>
-      )}
-      {subLabel && (
-        <Typography
-          variant="caption"
-          sx={{ lineHeight: 1, fontSize: "9px", opacity: 0.8 }}
-        >
-          {subLabel}
-        </Typography>
-      )}
+      <Box sx={{ color: color || "inherit", display: "flex", mb: 0.5 }}>
+        {icon}
+      </Box>
+      <Typography
+        variant="caption"
+        sx={{
+          fontSize: "10px",
+          lineHeight: 1.1,
+          textAlign: "center",
+          opacity: active ? 1 : 0.9,
+        }}
+      >
+        {label}
+        {subLabel && (
+          <>
+            <br />
+            {subLabel}
+          </>
+        )}
+      </Typography>
     </Button>
   );
 };
