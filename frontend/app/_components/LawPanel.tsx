@@ -1,3 +1,4 @@
+// LawPanel.tsx
 import React, { useState, useRef, useCallback } from "react";
 import {
   Box,
@@ -23,8 +24,9 @@ import {
 import { accordionItems, ButtonItem } from "../../constants";
 import { LawData } from "@/type/LawDataZod";
 import TopMain from "./TopMain";
+import { ColorSchemeType } from "../../type/type";
 
-// --- ユーティリティ (変更なし) ---
+// --- ユーティリティ ---
 const numberToKanji = (num: number): string => {
   if (num === 0) return "";
   const kanjiDigits = [
@@ -58,10 +60,53 @@ const numberToKanji = (num: number): string => {
   return String(num);
 };
 
-export const LawPanel: React.FC = () => {
+// ▼ 追加: 配色に応じたスタイル定義を取得するヘルパー
+const getColorStyles = (scheme: ColorSchemeType) => {
+  switch (scheme) {
+    case "yellow":
+      return {
+        bg: "#fffde7",
+        text: "#000",
+        border: "#e0e0e0",
+        subBg: "#fff9c4",
+        inputBg: "#fff",
+      };
+    case "blue":
+      return {
+        bg: "#e3f2fd",
+        text: "#000",
+        border: "#bbdefb",
+        subBg: "#bbdefb",
+        inputBg: "#fff",
+      };
+    case "black":
+      return {
+        bg: "#212121",
+        text: "#fff",
+        border: "#424242",
+        subBg: "#333",
+        inputBg: "#424242",
+      };
+    case "none":
+    default:
+      return {
+        bg: "background.paper",
+        text: "text.primary",
+        border: "divider",
+        subBg: "grey.100",
+        inputBg: "white",
+      };
+  }
+};
+
+interface LawPanelProps {
+  colorScheme?: ColorSchemeType;
+}
+
+export const LawPanel: React.FC<LawPanelProps> = ({ colorScheme = "none" }) => {
   // --- 幅管理用 ---
   const [sidebarWidth, setSidebarWidth] = useState(260);
-  const [isResizing, setIsResizing] = useState(false); // リサイズ中かどうかのフラグ
+  const [isResizing, setIsResizing] = useState(false);
   const [showToc, setShowToc] = useState(true);
 
   // LawPanel全体のコンテナ位置を取得するためのRef
@@ -81,10 +126,14 @@ export const LawPanel: React.FC = () => {
 
   const contentRef = useRef<HTMLDivElement>(null);
 
-  // --- リサイズ機能の実装 (修正版) ---
+  // ▼ 配色スタイルの取得
+  const styles = getColorStyles(colorScheme);
+  const isDark = colorScheme === "black";
+
+  // --- リサイズ機能の実装 ---
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
-    e.stopPropagation(); // 親要素への伝播を防ぐ
+    e.stopPropagation();
     setIsResizing(true);
     document.addEventListener("mousemove", handleMouseMove);
     document.addEventListener("mouseup", handleMouseUp);
@@ -94,14 +143,8 @@ export const LawPanel: React.FC = () => {
 
   const handleMouseMove = useCallback((e: MouseEvent) => {
     if (!containerRef.current) return;
-
-    // コンテナ（LawPanel全体）の左端の位置を取得
     const rect = containerRef.current.getBoundingClientRect();
-
-    // マウスのX座標 - コンテナの左端 = サイドバーの幅
     const relativeX = e.clientX - rect.left;
-
-    // 最小幅 150px, 最大幅 600px に制限
     const newWidth = Math.max(150, Math.min(relativeX, 600));
     setSidebarWidth(newWidth);
   }, []);
@@ -150,12 +193,12 @@ export const LawPanel: React.FC = () => {
       const lawId = foundButton.link.replace(/^\//, "");
       setSelectedLawId(lawId);
       try {
-        const res = await fetch(
-          `https://law-cbt.vercel.app/api?lawId=${lawId}`
-        );
         // const res = await fetch(
-        //   `http://localhost:3000/api?lawId=${lawId}`
+        //   `https://law-cbt.vercel.app/api?lawId=${lawId}`
         // );
+        const res = await fetch(
+          `http://localhost:3000/api?lawId=${lawId}`
+        );
         if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
         const json = await res.json();
         setLawData(json);
@@ -187,9 +230,6 @@ export const LawPanel: React.FC = () => {
     }
     if (targetElement) {
       targetElement.scrollIntoView({ behavior: "smooth", block: "center" });
-      if (targetElement instanceof HTMLElement) {
-        // (省略: ハイライト処理)
-      }
     }
   };
 
@@ -199,24 +239,27 @@ export const LawPanel: React.FC = () => {
 
   return (
     <Box
-      ref={containerRef} // ここにRefを設定して座標計算の基準にする
+      ref={containerRef}
       sx={{
         display: "flex",
         flexDirection: "column",
         height: "100%",
         width: "100%",
-        bgcolor: "background.paper",
+        // ▼ 配色適用
+        bgcolor: styles.bg,
+        color: styles.text,
         borderRight: 1,
-        borderColor: "divider",
+        borderColor: styles.border,
       }}
     >
       {/* Top Search Bar */}
       <Box
         sx={{
           height: 44,
-          bgcolor: "grey.100",
+          // ▼ 配色適用
+          bgcolor: colorScheme === "none" ? "grey.100" : styles.subBg,
           borderBottom: 1,
-          borderColor: "divider",
+          borderColor: styles.border,
           display: "flex",
           alignItems: "center",
           flexShrink: 0,
@@ -225,17 +268,16 @@ export const LawPanel: React.FC = () => {
         {/* 左側：目次検索エリア */}
         <Box
           sx={{
-            // リサイズ中はtransitionを切ってスムーズにする
             width: showToc ? sidebarWidth : "auto",
             transition: isResizing ? "none" : "width 0.2s",
             display: "flex",
             alignItems: "center",
             height: "100%",
             borderRight: 1,
-            borderColor: "divider",
+            borderColor: styles.border,
             px: 1,
             boxSizing: "border-box",
-            overflow: "hidden", // 幅が狭まったときの中身の制御
+            overflow: "hidden",
           }}
         >
           {showToc && (
@@ -248,12 +290,24 @@ export const LawPanel: React.FC = () => {
               InputProps={{
                 startAdornment: (
                   <InputAdornment position="start">
-                    <Search sx={{ fontSize: 16 }} />
+                    <Search
+                      sx={{
+                        fontSize: 16,
+                        color: isDark ? "grey.400" : "inherit",
+                      }}
+                    />
                   </InputAdornment>
                 ),
-                sx: { height: 32, fontSize: 13, bgcolor: "white" },
+                // ▼ 配色適用 (黒背景時の入力欄)
+                sx: {
+                  height: 32,
+                  fontSize: 13,
+                  bgcolor: styles.inputBg,
+                  color: isDark ? "#fff" : "inherit",
+                  "& input": { color: isDark ? "#fff" : "inherit" },
+                },
               }}
-              sx={{ flex: 1, mr: 1, minWidth: 0 }} // minWidth: 0 で縮小時に崩れないように
+              sx={{ flex: 1, mr: 1, minWidth: 0 }}
             />
           )}
 
@@ -262,12 +316,13 @@ export const LawPanel: React.FC = () => {
             onClick={() => setShowToc(!showToc)}
             sx={{
               border: 1,
-              borderColor: "divider",
-              bgcolor: "white",
+              borderColor: styles.border,
+              bgcolor: styles.inputBg,
               borderRadius: 1,
               width: 32,
               height: 32,
               flexShrink: 0,
+              color: isDark ? "#fff" : "inherit",
             }}
           >
             <ChevronLeft
@@ -281,11 +336,14 @@ export const LawPanel: React.FC = () => {
 
         {/* 右側：条文操作エリア */}
         <Box sx={{ display: "flex", alignItems: "center", px: 1, flex: 1 }}>
-          {/* (以前と同じ中身) */}
           <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
             <Typography
               variant="caption"
-              sx={{ fontWeight: "bold", color: "text.secondary", mr: 0.5 }}
+              sx={{
+                fontWeight: "bold",
+                color: isDark ? "grey.400" : "text.secondary",
+                mr: 0.5,
+              }}
             >
               条文
             </Typography>
@@ -293,15 +351,19 @@ export const LawPanel: React.FC = () => {
               sx={{
                 display: "flex",
                 alignItems: "center",
-                bgcolor: "white",
+                // ▼ 配色適用
+                bgcolor: styles.inputBg,
                 border: 1,
-                borderColor: "divider",
+                borderColor: styles.border,
                 borderRadius: 1,
                 px: 1,
                 height: 32,
               }}
             >
-              <Typography variant="caption" color="text.secondary">
+              <Typography
+                variant="caption"
+                color={isDark ? "grey.400" : "text.secondary"}
+              >
                 第
               </Typography>
               <input
@@ -313,13 +375,19 @@ export const LawPanel: React.FC = () => {
                   width: 30,
                   textAlign: "center",
                   border: "none",
-                  borderBottom: "1px solid #ddd",
+                  borderBottom: `1px solid ${isDark ? "#666" : "#ddd"}`,
                   outline: "none",
                   fontSize: 12,
                   margin: "0 4px",
+                  // ▼ 配色適用
+                  backgroundColor: "transparent",
+                  color: isDark ? "#fff" : "inherit",
                 }}
               />
-              <Typography variant="caption" color="text.secondary">
+              <Typography
+                variant="caption"
+                color={isDark ? "grey.400" : "text.secondary"}
+              >
                 条の
               </Typography>
               <input
@@ -331,10 +399,13 @@ export const LawPanel: React.FC = () => {
                   width: 30,
                   textAlign: "center",
                   border: "none",
-                  borderBottom: "1px solid #ddd",
+                  borderBottom: `1px solid ${isDark ? "#666" : "#ddd"}`,
                   outline: "none",
                   fontSize: 12,
                   margin: "0 4px",
+                  // ▼ 配色適用
+                  backgroundColor: "transparent",
+                  color: isDark ? "#fff" : "inherit",
                 }}
               />
             </Box>
@@ -398,15 +469,19 @@ export const LawPanel: React.FC = () => {
           <Box
             sx={{
               width: sidebarWidth,
-              // リサイズ中はカクつき防止のためにtransitionを無効化
               transition: isResizing ? "none" : "width 0.2s",
-              bgcolor: "grey.50",
+              // ▼ 配色適用
+              bgcolor: isDark
+                ? "#1e1e1e"
+                : colorScheme === "none"
+                ? "grey.50"
+                : styles.bg,
+              borderRight: `1px solid ${styles.border}`,
               overflowY: "auto",
               flexShrink: 0,
             }}
           >
             <List dense disablePadding>
-              {/* アコーディオンの中身（変更なし） */}
               {filteredAccordionItems.map((category) => {
                 const isOpen =
                   tocSearchQuery !== ""
@@ -419,19 +494,32 @@ export const LawPanel: React.FC = () => {
                       sx={{
                         py: 0.5,
                         minHeight: 32,
-                        bgcolor: "grey.200",
+                        // ▼ 配色適用
+                        bgcolor: isDark
+                          ? "#333"
+                          : colorScheme === "none"
+                          ? "grey.200"
+                          : styles.subBg,
                         borderBottom: 1,
-                        borderColor: "divider",
-                        "&:hover": { bgcolor: "grey.300" },
+                        borderColor: styles.border,
+                        "&:hover": { bgcolor: isDark ? "#444" : "grey.300" },
                       }}
                     >
                       {isOpen ? (
                         <ExpandLess
-                          sx={{ fontSize: 16, mr: 1, color: "text.secondary" }}
+                          sx={{
+                            fontSize: 16,
+                            mr: 1,
+                            color: isDark ? "grey.400" : "text.secondary",
+                          }}
                         />
                       ) : (
                         <ExpandMore
-                          sx={{ fontSize: 16, mr: 1, color: "text.secondary" }}
+                          sx={{
+                            fontSize: 16,
+                            mr: 1,
+                            color: isDark ? "grey.400" : "text.secondary",
+                          }}
                         />
                       )}
                       <ListItemText
@@ -439,7 +527,8 @@ export const LawPanel: React.FC = () => {
                         primaryTypographyProps={{
                           fontSize: 12,
                           fontWeight: "bold",
-                          color: "text.primary",
+                          // ▼ 配色適用
+                          color: isDark ? "#eee" : "text.primary",
                         }}
                       />
                     </ListItemButton>
@@ -456,13 +545,15 @@ export const LawPanel: React.FC = () => {
                               sx={{
                                 pl: 4,
                                 borderBottom: 1,
-                                borderColor: "divider",
+                                borderColor: styles.border,
                                 py: 0.8,
                                 "&.Mui-selected": {
                                   bgcolor: "primary.light",
                                   color: "primary.contrastText",
                                   "&:hover": { bgcolor: "primary.main" },
                                 },
+                                // ▼ 配色適用 (非選択時)
+                                color: isDark ? "#ddd" : "inherit",
                               }}
                             >
                               <Article
@@ -487,27 +578,26 @@ export const LawPanel: React.FC = () => {
           </Box>
         )}
 
-        {/* --- リサイズハンドル (App.tsxと同じスタイル) --- */}
+        {/* --- リサイズハンドル --- */}
         {showToc && (
           <Box
             onMouseDown={handleMouseDown}
             sx={{
-              width: 6, // つかみやすい幅
+              width: 6,
               cursor: "col-resize",
-              bgcolor: "grey.300", // App.tsxのボーダー色に合わせる
+              bgcolor: "grey.300",
               display: "flex",
               justifyContent: "center",
               alignItems: "center",
               transition: "background-color 0.2s",
               "&:hover": {
-                bgcolor: "primary.light", // ホバー時に色を変える
+                bgcolor: "primary.light",
               },
               flexShrink: 0,
               zIndex: 10,
               position: "relative",
             }}
           >
-            {/* 中央の小さな飾り（グリップ） */}
             <Box
               sx={{
                 width: 2,
@@ -523,12 +613,13 @@ export const LawPanel: React.FC = () => {
         <Box
           ref={contentRef}
           sx={{
-            flex: 1, overflowY: "auto",
-            // p: 3,
-            bgcolor: "background.paper"
+            flex: 1,
+            overflowY: "auto",
+            // ▼ 配色適用
+            bgcolor: styles.bg,
+            color: styles.text,
           }}
         >
-          {/* iframeなどが来る場合にリサイズイベントを吸われないためのカバー */}
           {isResizing && (
             <Box sx={{ position: "absolute", inset: 0, zIndex: 100 }} />
           )}

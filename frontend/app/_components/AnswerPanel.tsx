@@ -1,15 +1,20 @@
+// AnswerPanel.tsx
 import React, { useState, useRef } from "react";
 import { Box, Typography, Button, Stack } from "@mui/material";
 import { Search, FindReplace, Undo, Redo } from "@mui/icons-material";
+import { ColorSchemeType } from "../../type/type";
 
 interface AnswerPanelProps {
   value: string;
   onChange: (value: string) => void;
+  // ▼ 追加: 配色プロップス
+  colorScheme?: ColorSchemeType;
 }
 
 export const AnswerPanel: React.FC<AnswerPanelProps> = ({
   value,
   onChange,
+  colorScheme = "none",
 }) => {
   const safeValue = value || "";
   const lines = safeValue.split("\n");
@@ -28,6 +33,51 @@ export const AnswerPanel: React.FC<AnswerPanelProps> = ({
     }
   };
 
+  // ▼ 追加: 配色スタイルの取得ロジック
+  const getStyles = () => {
+    switch (colorScheme) {
+      case "yellow":
+        return {
+          mainBg: "#fffde7", // 薄い黄色
+          gutterBg: "#fff9c4", // 少し濃い黄色
+          text: "#000",
+          border: "#e0e0e0",
+          headerBg: "#f5f5f5",
+          lineColor: "#e0e0e0",
+        };
+      case "blue":
+        return {
+          mainBg: "#e3f2fd", // 薄い青
+          gutterBg: "#bbdefb",
+          text: "#000",
+          border: "#bbdefb",
+          headerBg: "#f5f5f5",
+          lineColor: "#bbdefb",
+        };
+      case "black":
+        return {
+          mainBg: "#121212", // 黒
+          gutterBg: "#1e1e1e", // ダークグレー
+          text: "#fff",
+          border: "#333",
+          headerBg: "#424242",
+          lineColor: "#333",
+        };
+      default: // none
+        return {
+          mainBg: "#fff",
+          gutterBg: "#fff",
+          text: "#333",
+          border: "#ccc",
+          headerBg: "#f5f5f5",
+          lineColor: "#e0e0e0",
+        };
+    }
+  };
+
+  const styles = getStyles();
+  const isDark = colorScheme === "black";
+
   // ★修正したボタンスタイル
   const toolButtonStyle = {
     bgcolor: "#607d8b",
@@ -35,30 +85,22 @@ export const AnswerPanel: React.FC<AnswerPanelProps> = ({
     fontSize: "12px",
     fontWeight: "bold",
     height: 32,
-    minWidth: "36px", // ボタンの最小幅を少し確保
-
-    // パディング: 文字なし(xs)は狭く、文字あり(md)は広く
+    minWidth: "36px",
     px: { xs: 1, md: 2 },
-
     borderRadius: 1,
     boxShadow: "0px 2px 4px rgba(0,0,0,0.2)",
     textTransform: "none",
     "&:hover": {
       bgcolor: "#546e7a",
     },
-
-    // Start Icon (左アイコン) のマージン制御
     "& .MuiButton-startIcon": {
-      mr: { xs: 0, md: 0.5 }, // 文字がない時はマージン0
+      mr: { xs: 0, md: 0.5 },
       ml: 0,
     },
-
-    // End Icon (右アイコン) のマージン制御
     "& .MuiButton-endIcon": {
-      ml: { xs: 0, md: 0.5 }, // 文字がない時はマージン0
+      ml: { xs: 0, md: 0.5 },
       mr: 0,
     },
-
     "& .MuiSvgIcon-root": { fontSize: 18 },
   };
 
@@ -69,8 +111,9 @@ export const AnswerPanel: React.FC<AnswerPanelProps> = ({
         flexDirection: "column",
         height: "100vh",
         width: "100%",
-        bgcolor: "#fff",
-        border: "1px solid #ccc",
+        // ▼ 配色適用
+        bgcolor: styles.mainBg,
+        border: `1px solid ${styles.border}`,
         overflow: "hidden",
       }}
     >
@@ -89,8 +132,10 @@ export const AnswerPanel: React.FC<AnswerPanelProps> = ({
 
       <Box
         sx={{
-          bgcolor: "#f5f5f5",
-          borderBottom: "1px solid #e0e0e0",
+          // ▼ 配色適用
+          bgcolor: isDark ? styles.headerBg : "#f5f5f5",
+          borderBottom: `1px solid ${isDark ? "#555" : "#e0e0e0"}`,
+          color: isDark ? "#fff" : "inherit",
           px: 2,
           py: 1,
           display: "flex",
@@ -143,7 +188,6 @@ export const AnswerPanel: React.FC<AnswerPanelProps> = ({
             </Box>
           </Button>
 
-          {/* endIconを使ったボタン */}
           <Button endIcon={<Redo />} sx={toolButtonStyle}>
             <Box
               component="span"
@@ -167,8 +211,9 @@ export const AnswerPanel: React.FC<AnswerPanelProps> = ({
           ref={gutterRef}
           sx={{
             width: 48,
-            bgcolor: "#fff",
-            borderRight: "1px solid #e0e0e0",
+            // ▼ 配色適用
+            bgcolor: styles.gutterBg,
+            borderRight: `1px solid ${isDark ? "#333" : "#e0e0e0"}`,
             pt: "8px",
             pb: 2,
             textAlign: "right",
@@ -223,15 +268,18 @@ export const AnswerPanel: React.FC<AnswerPanelProps> = ({
               fontFamily: "monospace",
               fontSize: `${fontSize}px`,
               lineHeight: `${lineHeight}px`,
+              // ▼ 配色適用 (罫線の描画)
               backgroundImage: `linear-gradient(to bottom, transparent ${
                 lineHeight - 1
-              }px, #e0e0e0 ${lineHeight - 1}px)`,
+              }px, ${styles.lineColor} ${lineHeight - 1}px)`,
               backgroundSize: `100% ${lineHeight}px`,
               backgroundAttachment: "local",
+              // ▼ 配色適用 (背景色・文字色)
+              backgroundColor: styles.mainBg,
+              color: styles.text,
               resize: "none",
               outline: "none",
               boxSizing: "border-box",
-              color: "#333",
             }}
             value={safeValue}
             onChange={(e) => onChange(e.target.value)}
