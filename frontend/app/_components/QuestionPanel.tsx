@@ -1,3 +1,4 @@
+// QuestionPanel.tsx
 import React, {
   useState,
   useRef,
@@ -34,14 +35,12 @@ import {
   UploadFile,
   FormatListBulleted,
   Height,
+  CloudUpload,
 } from "@mui/icons-material";
-import { ToolMode } from "../../types";
-
-// PDF.jsの型定義
+import { ToolMode } from "../../type/type";
 import type { PDFDocumentProxy, PDFPageProxy } from "pdfjs-dist";
 
-// --- (中略：インターフェース定義やToolBtnなどはそのまま) ---
-
+// --- 型定義 ---
 interface RenderTask {
   promise: Promise<void>;
   cancel(): void;
@@ -56,9 +55,7 @@ interface PdfTextItem {
 }
 
 function isPdfTextItem(item: unknown): item is PdfTextItem {
-  if (typeof item !== "object" || item === null) {
-    return false;
-  }
+  if (typeof item !== "object" || item === null) return false;
   const candidate = item as { str?: unknown; transform?: unknown };
   return (
     typeof candidate.str === "string" && Array.isArray(candidate.transform)
@@ -68,10 +65,13 @@ function isPdfTextItem(item: unknown): item is PdfTextItem {
 interface QuestionPanelProps {
   width: number;
   onPdfLoaded?: () => void;
+  // ▼ 追加: 初期表示用のPDFデータと、変更通知用のコールバック
+  initialPdfData?: ArrayBuffer | null;
+  onPdfChange?: (data: ArrayBuffer) => void;
 }
 
 export interface QuestionPanelRef {
-  getContent: () => string;
+  getPdfData: () => ArrayBuffer | null;
 }
 
 interface ToolBtnProps {
@@ -140,25 +140,20 @@ const MARKER_COLORS = [
   },
 ];
 
-// --- (中略：PdfPageコンポーネントはそのまま) ---
+// --- PdfPageコンポーネント ---
 const PdfPage = React.memo(
   ({ page, scale }: { page: PDFPageProxy; scale: number }) => {
-    // ... (PdfPageの実装は変更なし)
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const [textItems, setTextItems] = useState<PdfTextItem[]>([]);
     const [viewportHeight, setViewportHeight] = useState(0);
     const renderTaskRef = useRef<RenderTask | null>(null);
 
     useEffect(() => {
-      // ... (省略)
       const renderPage = async () => {
         const viewport = page.getViewport({ scale });
         setViewportHeight(viewport.height);
-        // ... (省略: Canvas描画処理)
         const canvas = canvasRef.current;
         if (canvas) {
-          // ...
-          // 簡略化のため中身は省略しますが、元のコードのままでOKです
           const context = canvas.getContext("2d");
           if (context) {
             const outputScale = window.devicePixelRatio || 1;
@@ -181,11 +176,10 @@ const PdfPage = React.memo(
             try {
               await renderTaskRef.current.promise;
             } catch (e) {
-              /*...*/
+              /* キャンセル時は無視 */
             }
           }
         }
-        // ... (省略: テキストレイヤー生成)
         try {
           const textContent = await page.getTextContent();
           const items = textContent.items.filter(
@@ -204,6 +198,7 @@ const PdfPage = React.memo(
 
     return (
       <div
+        className="pdf-page-container"
         style={{
           position: "relative",
           marginBottom: "20px",
@@ -228,7 +223,6 @@ const PdfPage = React.memo(
           }}
         >
           {textItems.map((item, index) => {
-            // ... (省略: テキスト配置ロジックは元のまま)
             const tx = item.transform;
             const left = tx[4] * scale;
             const fontSize = Math.sqrt(tx[0] * tx[0] + tx[1] * tx[1]) * scale;
@@ -259,11 +253,13 @@ const PdfPage = React.memo(
 );
 PdfPage.displayName = "PdfPage";
 
+// --- QuestionPanel 本体 ---
+
 export const QuestionPanel = forwardRef<QuestionPanelRef, QuestionPanelProps>(
-  ({ width, onPdfLoaded }, ref) => {
-    // --- (中略：Hooksやstateはそのまま) ---
+  ({ width, onPdfLoaded, initialPdfData, onPdfChange }, ref) => {
     const [zoom, setZoom] = useState(100);
     const [currentTool, setCurrentTool] = useState<ToolMode>(ToolMode.SELECT);
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const [pdfDocument, setPdfDocument] = useState<PDFDocumentProxy | null>(
       null
     );
@@ -272,19 +268,26 @@ export const QuestionPanel = forwardRef<QuestionPanelRef, QuestionPanelProps>(
     const fileInputRef = useRef<HTMLInputElement>(null);
     const [confirmOpen, setConfirmOpen] = useState(false);
     const [pendingFile, setPendingFile] = useState<File | null>(null);
+
+    const [rawPdfData, setRawPdfData] = useState<ArrayBuffer | null>(null);
+
     const [markerColor, setMarkerColor] = useState(MARKER_COLORS[0].value);
     const [colorMenuAnchor, setColorMenuAnchor] = useState<null | HTMLElement>(
       null
     );
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const [selectedMarkerElement, setSelectedMarkerElement] =
       useState<HTMLElement | null>(null);
     const [markerPopoverAnchor, setMarkerPopoverAnchor] =
       useState<null | HTMLElement>(null);
     const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
     const containerRef = useRef<HTMLDivElement>(null);
+    const [isDragging, setIsDragging] = useState(false);
+
+    // ★追加: 読み込み済みフラグ（無限ループ防止）
+    const loadedInitialRef = useRef(false);
 
     useEffect(() => {
-      // ... (省略)
       const styleId = "pdf-text-layer-style";
       if (!document.getElementById(styleId)) {
         const style = document.createElement("style");
@@ -295,12 +298,52 @@ export const QuestionPanel = forwardRef<QuestionPanelRef, QuestionPanelProps>(
     }, []);
 
     useImperativeHandle(ref, () => ({
-      getContent: () => containerRef.current?.innerHTML || "",
+      getPdfData: () => rawPdfData,
     }));
 
-    // ... (省略: handleFileSelect, processPdfFile, handleDialogClose, triggerFileUpload, handleToolClick, handleColorSelect 等)
+    // --- 共通: バッファからPDFをロードする処理 ---
+    const loadPdfFromBuffer = async (arrayBuffer: ArrayBuffer) => {
+      setIsLoading(true);
+      setPages([]);
+      setPdfDocument(null);
+      // ここで rawPdfData をセット
+      setRawPdfData(arrayBuffer);
+
+      try {
+        const pdfjsLib = await import("pdfjs-dist");
+        pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
+
+        // PDF.js は転送時にバッファを使用不能にすることがあるためコピーを使う
+        const loadingTask = pdfjsLib.getDocument({
+          data: arrayBuffer.slice(0),
+          cMapUrl: `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/cmaps/`,
+          cMapPacked: true,
+        });
+
+        const pdf = await loadingTask.promise;
+        setPdfDocument(pdf);
+        const loadedPages: PDFPageProxy[] = [];
+        for (let i = 1; i <= pdf.numPages; i++)
+          loadedPages.push(await pdf.getPage(i));
+        setPages(loadedPages);
+        if (onPdfLoaded) onPdfLoaded();
+      } catch (error) {
+        console.error("PDF Load Error:", error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    // --- ★追加: 初期データ(復元データ)の読み込み監視 ---
+    useEffect(() => {
+      if (initialPdfData && !loadedInitialRef.current && !rawPdfData) {
+        loadedInitialRef.current = true;
+        loadPdfFromBuffer(initialPdfData);
+      }
+    }, [initialPdfData, rawPdfData]);
+
+    // --- ファイル操作関連 ---
     const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
-      /*...*/
       const file = event.target.files?.[0];
       if (!file) return;
       if (file.type !== "application/pdf") {
@@ -311,37 +354,29 @@ export const QuestionPanel = forwardRef<QuestionPanelRef, QuestionPanelProps>(
       setConfirmOpen(true);
       event.target.value = "";
     };
+
     const processPdfFile = async () => {
-      /*...*/
       if (!pendingFile) return;
       setConfirmOpen(false);
-      setIsLoading(true);
-      setPages([]);
-      setPdfDocument(null);
+
       try {
-        const pdfjsLib = await import("pdfjs-dist");
-        pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
         const arrayBuffer = await pendingFile.arrayBuffer();
-        const loadingTask = pdfjsLib.getDocument({
-          data: arrayBuffer,
-          cMapUrl: `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/cmaps/`,
-          cMapPacked: true,
-        });
-        const pdf = await loadingTask.promise;
-        setPdfDocument(pdf);
-        const loadedPages: PDFPageProxy[] = [];
-        for (let i = 1; i <= pdf.numPages; i++)
-          loadedPages.push(await pdf.getPage(i));
-        setPages(loadedPages);
-        if (onPdfLoaded) onPdfLoaded();
+
+        // 親コンポーネントへ通知 (IndexedDB保存用)
+        if (onPdfChange) {
+          onPdfChange(arrayBuffer);
+        }
+
+        // 表示
+        await loadPdfFromBuffer(arrayBuffer);
       } catch (error) {
         console.error(error);
         alert("Load failed");
       } finally {
-        setIsLoading(false);
         setPendingFile(null);
       }
     };
+
     const handleDialogClose = () => {
       setConfirmOpen(false);
       setPendingFile(null);
@@ -349,6 +384,8 @@ export const QuestionPanel = forwardRef<QuestionPanelRef, QuestionPanelProps>(
     const triggerFileUpload = () => {
       fileInputRef.current?.click();
     };
+
+    // --- ツール・マーカー関連 ---
     const handleToolClick = (
       tool: ToolMode,
       event: React.MouseEvent<HTMLButtonElement>
@@ -362,32 +399,22 @@ export const QuestionPanel = forwardRef<QuestionPanelRef, QuestionPanelProps>(
       setColorMenuAnchor(null);
     };
 
-    // ... (省略: マーカー関連ロジック handleMouseUp, handleContentClick, handleDeleteMarker 等)
-    const getTextNodesInRange = (range: Range): Text[] => {
-      /*...*/ return [];
-    }; // 実装省略(元のまま)
-    const handleMouseUp = () => {
-      /*...*/
-    }; // 実装省略(元のまま)
-
-    // 省略されていたロジックを復元（ハンドラ定義の場所）
-    // ※元のコードのhandleMouseUp等を使用してください
-
     const handleContentClick = (e: React.MouseEvent) => {
       const target = e.target as HTMLElement;
       if (
-        target.tagName === "SPAN" &&
-        target.getAttribute("data-marker") === "true"
+        (target.tagName === "SPAN" &&
+          target.getAttribute("data-marker") === "true") ||
+        target.closest('[data-marker="true"]')
       ) {
-        setSelectedMarkerElement(target);
-        setMarkerPopoverAnchor(target);
-        const groupId = target.getAttribute("data-group-id");
-        setSelectedGroupId(groupId);
+        const el = target.closest('[data-marker="true"]') as HTMLElement;
+        setSelectedMarkerElement(el);
+        setMarkerPopoverAnchor(el);
+        setSelectedGroupId(el.getAttribute("data-group-id"));
         e.stopPropagation();
       }
     };
+
     const handleDeleteMarker = () => {
-      /*...*/
       if (containerRef.current && selectedGroupId) {
         const markers = containerRef.current.querySelectorAll(
           `span[data-group-id="${selectedGroupId}"]`
@@ -409,30 +436,72 @@ export const QuestionPanel = forwardRef<QuestionPanelRef, QuestionPanelProps>(
     const activeColorObj =
       MARKER_COLORS.find((c) => c.value === markerColor) || MARKER_COLORS[0];
 
-    // --- ここから追加：コピー禁止ロジック ---
     const handlePreventCopy = (e: React.ClipboardEvent | React.UIEvent) => {
       e.preventDefault();
       e.stopPropagation();
-      // 必要に応じてユーザーに通知する場合
-      // alert("コピーは禁止されています");
     };
-
     const handleKeyDown = (e: React.KeyboardEvent) => {
-      // Ctrl+C または Ctrl+X (Macの場合はMetaキーも考慮)
       if ((e.ctrlKey || e.metaKey) && (e.key === "c" || e.key === "x")) {
         e.preventDefault();
         e.stopPropagation();
       }
     };
-    // ------------------------------------
+
+    // --- ドラッグ＆ドロップ ---
+    const handleDragEnter = (e: React.DragEvent<HTMLDivElement>) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.dataTransfer.types && e.dataTransfer.types.includes("Files")) {
+        setIsDragging(true);
+      }
+    };
+
+    const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = "copy";
+      if (!isDragging) setIsDragging(true);
+    };
+
+    const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.currentTarget.contains(e.relatedTarget as Node)) {
+        return;
+      }
+      setIsDragging(false);
+    };
+
+    const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setIsDragging(false);
+
+      const file = e.dataTransfer.files?.[0];
+      if (!file) return;
+
+      if (file.type !== "application/pdf") {
+        alert("PDFファイルのみ読み込めます");
+        return;
+      }
+      setPendingFile(file);
+      setConfirmOpen(true);
+    };
+
+    const handleMouseUp = () => {
+      // マーカー処理（省略）
+    };
 
     return (
       <Box
-        // 一番外側のBoxにイベントハンドラを追加
         onCopy={handlePreventCopy}
         onCut={handlePreventCopy}
         onKeyDown={handleKeyDown}
-        tabIndex={0} // キーボードイベントを受け取るためにtabIndexを設定
+        tabIndex={0}
+        onDragEnter={handleDragEnter}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
         sx={{
           display: "flex",
           flexDirection: "column",
@@ -442,10 +511,37 @@ export const QuestionPanel = forwardRef<QuestionPanelRef, QuestionPanelProps>(
           borderRight: 1,
           borderColor: "divider",
           position: "relative",
-          outline: "none", // フォーカス時の青枠を消す
+          outline: "none",
         }}
       >
-        {/* --- 内部のJSXは元のまま --- */}
+        {isDragging && (
+          <Box
+            sx={{
+              position: "absolute",
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              zIndex: 9999,
+              bgcolor: "rgba(25, 118, 210, 0.15)",
+              backdropFilter: "blur(4px)",
+              border: "3px dashed #1976d2",
+              m: 1,
+              borderRadius: 2,
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              pointerEvents: "none",
+            }}
+          >
+            <CloudUpload sx={{ fontSize: 80, color: "#1976d2", mb: 2 }} />
+            <Typography variant="h4" color="primary" fontWeight="bold">
+              PDFをここにドロップ
+            </Typography>
+          </Box>
+        )}
+
         <input
           type="file"
           ref={fileInputRef}
@@ -454,7 +550,6 @@ export const QuestionPanel = forwardRef<QuestionPanelRef, QuestionPanelProps>(
           accept="application/pdf"
         />
 
-        {/* ヘッダーツールバー */}
         <Box
           sx={{
             bgcolor: "background.paper",
@@ -496,7 +591,6 @@ export const QuestionPanel = forwardRef<QuestionPanelRef, QuestionPanelProps>(
             position: "relative",
           }}
         >
-          {/* サイドツールバー */}
           <Paper
             elevation={0}
             sx={{
@@ -583,8 +677,7 @@ export const QuestionPanel = forwardRef<QuestionPanelRef, QuestionPanelProps>(
                 onClick={() => setZoom((z) => Math.min(z + 20, 300))}
                 sx={{ p: 0.5 }}
               >
-                {" "}
-                <ZoomIn sx={{ fontSize: 16 }} />{" "}
+                <ZoomIn sx={{ fontSize: 16 }} />
               </IconButton>
               <Typography variant="caption" sx={{ fontSize: "9px" }}>
                 {Math.round(zoom)}%
@@ -594,8 +687,7 @@ export const QuestionPanel = forwardRef<QuestionPanelRef, QuestionPanelProps>(
                 onClick={() => setZoom((z) => Math.max(z - 20, 50))}
                 sx={{ p: 0.5 }}
               >
-                {" "}
-                <ZoomOut sx={{ fontSize: 16 }} />{" "}
+                <ZoomOut sx={{ fontSize: 16 }} />
               </IconButton>
             </Box>
             <ToolBtn
@@ -605,7 +697,6 @@ export const QuestionPanel = forwardRef<QuestionPanelRef, QuestionPanelProps>(
             />
           </Paper>
 
-          {/* メインコンテンツエリア */}
           <Box
             sx={{
               flex: 1,
@@ -614,28 +705,59 @@ export const QuestionPanel = forwardRef<QuestionPanelRef, QuestionPanelProps>(
               p: 3,
               position: "relative",
               cursor: currentTool === ToolMode.MARKER ? "text" : "default",
+              display: pages.length === 0 ? "flex" : "block",
+              alignItems: "center",
+              justifyContent: "center",
             }}
-            onMouseUp={handleMouseUp} // 元のコードの関数を使用
+            onMouseUp={handleMouseUp}
           >
-            <div ref={containerRef} onClick={handleContentClick}>
+            <div
+              ref={containerRef}
+              onClick={handleContentClick}
+              style={{
+                width: pages.length === 0 ? "100%" : "auto",
+              }}
+            >
               {pages.length > 0 ? (
                 pages.map((page, index) => (
                   <PdfPage key={index} page={page} scale={zoom / 100} />
                 ))
               ) : (
-                <Paper
-                  sx={{ p: 4, maxWidth: 600, mx: "auto", textAlign: "center" }}
+                <Box
+                  sx={{
+                    maxWidth: 500,
+                    mx: "auto",
+                    textAlign: "center",
+                    p: 4,
+                    border: "2px dashed #bdbdbd",
+                    borderRadius: 2,
+                    bgcolor: "white",
+                    color: "text.secondary",
+                    cursor: "pointer",
+                    "&:hover": {
+                      bgcolor: "#f5f5f5",
+                      borderColor: "#1976d2",
+                    },
+                  }}
+                  onClick={triggerFileUpload}
                 >
-                  <Typography color="text.secondary">
-                    PDFファイルを読み込んでください。
+                  <CloudUpload
+                    sx={{ fontSize: 48, mb: 1, color: "action.active" }}
+                  />
+                  <Typography variant="h6" gutterBottom>
+                    PDFを読み込む
                   </Typography>
-                </Paper>
+                  <Typography variant="body2">
+                    ボタンをクリックするか、
+                    <br />
+                    PDFをここにドラッグ＆ドロップしてください。
+                  </Typography>
+                </Box>
               )}
             </div>
           </Box>
         </Box>
 
-        {/* マーカー色選択メニューなど（省略部分は元のまま） */}
         <Menu
           anchorEl={colorMenuAnchor}
           open={Boolean(colorMenuAnchor)}

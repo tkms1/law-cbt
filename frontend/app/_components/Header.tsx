@@ -101,11 +101,11 @@ export const Header: React.FC<HeaderProps> = memo(
           {/* Title Area */}
           <Box sx={{ mr: 2, display: "flex", flexDirection: "column" }}>
             <Typography variant="subtitle2" sx={{ fontWeight: "bold" }}>
-              司法試験等CBTシステム (体験版)
+              司法試験等CBTシステム
             </Typography>
-            <Typography variant="caption" sx={{ opacity: 0.8 }}>
+            {/* <Typography variant="caption" sx={{ opacity: 0.8 }}>
               論文式 令和７年_司法試験_公法系科目第１問
-            </Typography>
+            </Typography> */}
           </Box>
 
           <Box sx={{ height: "100%", display: "flex" }}>

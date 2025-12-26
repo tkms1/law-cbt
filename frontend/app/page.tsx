@@ -1,29 +1,89 @@
-// App.tsx
 "use client";
 import React, { useState, useEffect, useRef, memo, useCallback } from "react";
-import { Box, CircularProgress, Backdrop, Typography } from "@mui/material";
+import { Box, CircularProgress, Backdrop } from "@mui/material";
 import { Header } from "./_components/Header";
 import { QuestionPanel, QuestionPanelRef } from "./_components/QuestionPanel";
 import { LawPanel } from "./_components/LawPanel";
 import { AnswerPanel } from "./_components/AnswerPanel";
 import { MemoPad } from "./_components/MemoPad";
-import { PanelType, ColorSchemeType } from "../type//type";
+import { PanelType, ColorSchemeType } from "../type/type";
 import jsPDF from "jspdf";
-import html2canvas from "html2canvas";
+import { PDFDocument } from "pdf-lib";
 
-// メモ化コンポーネント
 const MemoizedQuestionPanel = memo(QuestionPanel);
 const MemoizedLawPanel = memo(LawPanel);
 const MemoizedAnswerPanel = memo(AnswerPanel);
 
+// --- ヘルパー関数: ArrayBuffer を Base64 文字列に変換 (Buffer非依存) ---
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  let binary = "";
+  const bytes = new Uint8Array(buffer);
+  const len = bytes.byteLength;
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return window.btoa(binary);
+}
+
+// --- IndexedDB Helper Utilities ---
+const DB_NAME = "CBT_SYSTEM_DB";
+const STORE_NAME = "pdf_store";
+const DB_VERSION = 1;
+
+const initDB = (): Promise<IDBDatabase> => {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve(request.result);
+    request.onupgradeneeded = (event) => {
+      const db = (event.target as IDBOpenDBRequest).result;
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME);
+      }
+    };
+  });
+};
+
+const savePdfToDB = async (data: ArrayBuffer): Promise<void> => {
+  const db = await initDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readwrite");
+    const store = tx.objectStore(STORE_NAME);
+    const request = store.put(data, "current_pdf");
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+  });
+};
+
+const getPdfFromDB = async (): Promise<ArrayBuffer | null> => {
+  const db = await initDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readonly");
+    const store = tx.objectStore(STORE_NAME);
+    const request = store.get("current_pdf");
+    request.onsuccess = () => resolve(request.result || null);
+    request.onerror = () => reject(request.error);
+  });
+};
+
+const clearPdfFromDB = async (): Promise<void> => {
+  const db = await initDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readwrite");
+    const store = tx.objectStore(STORE_NAME);
+    const request = store.delete("current_pdf");
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+  });
+};
+
 function App() {
-  // 表示するパネルの種類の管理
+  // --- State定義 ---
   const [visiblePanels, setVisiblePanels] = useState<PanelType[]>([
     PanelType.QUESTION,
     PanelType.LAW,
     PanelType.ANSWER,
   ]);
-
   const [panelOrder, setPanelOrder] = useState<PanelType[]>([
     PanelType.QUESTION,
     PanelType.LAW,
@@ -31,28 +91,112 @@ function App() {
   ]);
 
   const [answerText, setAnswerText] = useState("");
+  const [memoContent, setMemoContent] = useState("");
+
+  // PDFの復元用State
+  const [initialPdfData, setInitialPdfData] = useState<ArrayBuffer | null>(
+    null
+  );
+
+  // 初期ロード完了フラグ
+  const [isDataLoaded, setIsDataLoaded] = useState(false);
+
   const [horizontalSplit, setHorizontalSplit] = useState(50);
   const [verticalSplit, setVerticalSplit] = useState(50);
   const containerRef = useRef<HTMLDivElement>(null);
   const [resizingDirection, setResizingDirection] = useState<
     "horizontal" | "vertical" | null
   >(null);
-
-  // QuestionPanelのref
   const questionPanelRef = useRef<QuestionPanelRef>(null);
-
-  // PDF生成中のローディングstate
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
   const [showMemo, setShowMemo] = useState(false);
-
-  // 配色設定の状態管理
   const [colorScheme, setColorScheme] = useState<ColorSchemeType>("none");
 
-  // --- タイマー関連 ---
-  const [timeLeft, setTimeLeft] = useState(7200); // 2時間
-  // タイマーが動いているかどうかのフラグ
+  // タイマー設定 (初期値7200秒)
+  const [timeLeft, setTimeLeft] = useState(7200);
   const [isTimerActive, setIsTimerActive] = useState(false);
 
+  // --- ★★★ データ読み込み処理 (LocalStorage & IndexedDB) ★★★ ---
+  useEffect(() => {
+    // 1. LocalStorage (テキストデータ)
+    const savedAnswer = localStorage.getItem("cbt_answer_text");
+    const savedMemo = localStorage.getItem("cbt_memo_content");
+    const savedTime = localStorage.getItem("cbt_time_left");
+    const savedIsActive = localStorage.getItem("cbt_timer_active");
+
+    if (savedAnswer) setAnswerText(savedAnswer);
+    if (savedMemo) setMemoContent(savedMemo);
+
+    if (savedTime) {
+      const parsedTime = parseInt(savedTime, 10);
+      if (!isNaN(parsedTime) && parsedTime > 0) {
+        setTimeLeft(parsedTime);
+      }
+    }
+
+    if (savedIsActive === "true") {
+      setIsTimerActive(true);
+    }
+
+    // 2. IndexedDB (PDFデータ)
+    getPdfFromDB()
+      .then((data) => {
+        if (data) {
+          setInitialPdfData(data);
+        }
+      })
+      .catch((err) => {
+        console.error("Failed to load PDF from DB:", err);
+      })
+      .finally(() => {
+        // 全てのロードが完了したらフラグを立てる
+        setIsDataLoaded(true);
+      });
+  }, []);
+
+  // --- ★★★ データ保存処理 ★★★ ---
+
+  useEffect(() => {
+    if (isDataLoaded) {
+      localStorage.setItem("cbt_answer_text", answerText);
+    }
+  }, [answerText, isDataLoaded]);
+
+  useEffect(() => {
+    if (isDataLoaded) {
+      localStorage.setItem("cbt_memo_content", memoContent);
+    }
+  }, [memoContent, isDataLoaded]);
+
+  useEffect(() => {
+    if (isDataLoaded) {
+      localStorage.setItem("cbt_time_left", timeLeft.toString());
+    }
+  }, [timeLeft, isDataLoaded]);
+
+  useEffect(() => {
+    if (isDataLoaded) {
+      localStorage.setItem("cbt_timer_active", isTimerActive.toString());
+    }
+  }, [isTimerActive, isDataLoaded]);
+
+  // PDFが変更されたら保存するハンドラ
+  const handlePdfChange = useCallback((pdfBuffer: ArrayBuffer) => {
+    // 1. DBに保存
+    savePdfToDB(pdfBuffer).catch((err) =>
+      console.error("Failed to save PDF:", err)
+    );
+
+    // 2. 解答テキストとメモをリセット
+    setAnswerText("");
+    setMemoContent("");
+
+    // 3. タイマーを2時間(7200秒)にリセットし、開始状態にする
+    setTimeLeft(7200);
+    setIsTimerActive(true);
+  }, []);
+
+  // --- タイマー処理 ---
   useEffect(() => {
     if (!isTimerActive) return;
 
@@ -70,15 +214,13 @@ function App() {
   }, [isTimerActive]);
 
   const handlePdfLoaded = useCallback(() => {
-    setTimeLeft(7200);
+    // PDF読み込み完了時(表示完了時)にも念のためタイマー開始を呼ぶ
     setIsTimerActive(true);
   }, []);
 
-  // ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-  // ★ 修正版: PDF生成処理 (スマート分割 & 余白対応)
-  // ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+  // --- 提出・終了処理 ---
   const handleFinish = async () => {
-    if (!window.confirm("答案を提出して試験を終了しますか？")) {
+    if (!window.confirm("試験を終了しますか？答案をダウンロードします。")) {
       return;
     }
 
@@ -86,203 +228,107 @@ function App() {
     setIsGeneratingPdf(true);
 
     try {
-      // 1. 日本語フォントを読み込む
+      // 1. フォント読み込み
+      // 注意: public/fonts/MPLUS1p-Regular.ttf が存在する必要があります
       const fontResponse = await fetch("/MPLUS1p-Regular.ttf");
+
       if (!fontResponse.ok) {
         throw new Error(
-          "フォントファイルの読み込みに失敗しました。public/fonts/MPLUS1p-Regular.ttf を確認してください。"
+          `フォントファイルの読み込みに失敗しました (Status: ${fontResponse.status})。\npublic/fonts/MPLUS1p-Regular.ttf が正しく配置されているか確認してください。`
         );
       }
+
       const font = await fontResponse.arrayBuffer();
 
-      const questionContent = questionPanelRef.current?.getContent();
-      if (!questionContent) {
-        alert("問題文が読み込まれていません。");
-        return;
-      }
-
-      // 2. 一時的なコンテナを作成して問題文のHTMLをレンダリング
-      const container = document.createElement("div");
-      container.style.position = "absolute";
-      container.style.left = "-9999px";
-      container.style.top = "0px";
-      container.style.width = "800px"; // 描画幅を固定
-      container.style.padding = "20px"; // HTMLレンダリング時の内部パディング
-      container.style.backgroundColor = "white"; // ★重要: 背景を白にしておかないとピクセル判定が誤動作する
-      container.innerHTML = questionContent;
-      document.body.appendChild(container);
-
-      // 3. html2canvasで問題文全体を1枚の長い画像に変換
-      const canvas = await html2canvas(container, {
-        scale: 2, // 文字の鮮明さのためscaleは2推奨
-        useCORS: true,
-        height: container.scrollHeight, // 全体をキャプチャ
-        windowHeight: container.scrollHeight,
-      });
-
-      // 一時的なコンテナを削除
-      document.body.removeChild(container);
-
-      // 4. jsPDFの準備
-      const pdf = new jsPDF({
+      // 2. 答案PDF生成
+      const answerDoc = new jsPDF({
         orientation: "p",
         unit: "mm",
         format: "a4",
       });
 
-      // フォント登録
-      pdf.addFileToVFS(
-        "MPLUS1p-Regular.ttf",
-        Buffer.from(font).toString("base64")
-      );
-      pdf.addFont("MPLUS1p-Regular.ttf", "MPLUS1p-Regular", "normal");
+      // ★ Buffer.from を自作関数に置き換え (ブラウザ互換性対応)
+      const fontBase64 = arrayBufferToBase64(font);
 
-      // --- ページ分割と余白の計算設定 ---
-      const pdfPageWidth = pdf.internal.pageSize.getWidth(); // 210mm
-      const pdfPageHeight = pdf.internal.pageSize.getHeight(); // 297mm
-      const margin = 20; // ★ PDF周囲の余白 (mm)
+      answerDoc.addFileToVFS("MPLUS1p-Regular.ttf", fontBase64);
+      answerDoc.addFont("MPLUS1p-Regular.ttf", "MPLUS1p-Regular", "normal");
+      answerDoc.setFont("MPLUS1p-Regular", "normal");
 
-      // PDF上のコンテンツ描画可能エリア
-      const contentWidthMm = pdfPageWidth - margin * 2;
-      const contentHeightMm = pdfPageHeight - margin * 2;
+      const margin = 15;
+      const pdfPageWidth = answerDoc.internal.pageSize.getWidth();
+      const pdfPageHeight = answerDoc.internal.pageSize.getHeight();
+      const contentWidth = pdfPageWidth - margin * 2;
 
-      // キャンバス上の画像幅とPDF上の幅の比率
-      const imgWidth = canvas.width;
-      const imgHeight = canvas.height;
+      answerDoc.setFontSize(14);
+      answerDoc.text("【答案】", margin, margin);
+      answerDoc.setFontSize(10.5);
 
-      // PDFのコンテンツ幅(mm)に合わせたときの、キャンバス上のピクセル換算係数
-      const pxPerMm = imgWidth / contentWidthMm;
+      const splitText = answerDoc.splitTextToSize(answerText, contentWidth);
+      let currentY = margin + 10;
+      const lineHeight = 7;
 
-      // 1ページに収められるキャンバス上の高さ制限 (px)
-      const pageHeightInPx = contentHeightMm * pxPerMm;
-
-      const ctx = canvas.getContext("2d");
-      if (!ctx) throw new Error("Canvas context error");
-
-      let currentY = 0; // 現在処理しているキャンバスのY位置
-
-      // --- 画像をページごとに分割して配置するループ ---
-      while (currentY < imgHeight) {
-        // 残りの高さが1ページに収まるか？
-        let splitHeight = pageHeightInPx;
-
-        if (currentY + splitHeight > imgHeight) {
-          // 残りが1ページ未満ならそのまま採用
-          splitHeight = imgHeight - currentY;
-        } else {
-          // --- スマート分割ロジック ---
-          // ページ区切り位置(proposedSplitY)が文字の上に来ないよう、
-          // その位置から上に向かって「白い行（余白）」を探す
-          const proposedSplitY = currentY + splitHeight;
-          const searchRange = splitHeight * 0.2; // ページ下部20%の範囲を探索
-
-          // チェックする画像の幅（全幅）
-          const checkWidth = imgWidth;
-          // 探索範囲の高さ
-          const scanHeight = Math.floor(searchRange);
-          // 探索開始位置（Y）
-          const scanStartY = Math.floor(proposedSplitY - scanHeight);
-
-          if (scanStartY > currentY) {
-            // 該当エリアのピクセルデータを取得
-            const imageData = ctx.getImageData(
-              0,
-              scanStartY,
-              checkWidth,
-              scanHeight
-            );
-            const data = imageData.data;
-
-            // 下（ページ区切り予定位置に近い方）から上に向かって走査
-            for (let y = scanHeight - 1; y >= 0; y--) {
-              let isRowWhite = true;
-
-              // 横方向のピクセルをチェック (高速化のため5px飛ばしでチェック)
-              for (let x = 0; x < checkWidth; x += 5) {
-                const idx = (y * checkWidth + x) * 4;
-                const r = data[idx];
-                const g = data[idx + 1];
-                const b = data[idx + 2];
-                // 白ではない画素（文字など）があるか判定
-                // JPEGノイズやアンチエイリアスを考慮し、240程度を閾値とする
-                if (r < 240 || g < 240 || b < 240) {
-                  isRowWhite = false;
-                  break;
-                }
-              }
-
-              if (isRowWhite) {
-                // 白い行が見つかった！ここを実際の区切り位置にする
-                splitHeight = scanStartY + y - currentY;
-                break;
-              }
-            }
-          }
+      for (let i = 0; i < splitText.length; i++) {
+        if (currentY + lineHeight > pdfPageHeight - margin) {
+          answerDoc.addPage();
+          currentY = margin;
         }
-
-        // --- 切り出した画像をPDFに追加 ---
-        // 1. その部分だけのCanvasを作成
-        const pageCanvas = document.createElement("canvas");
-        pageCanvas.width = imgWidth;
-        pageCanvas.height = splitHeight;
-        const pageCtx = pageCanvas.getContext("2d");
-
-        if (pageCtx) {
-          // 元画像から該当部分を転写
-          pageCtx.drawImage(
-            canvas,
-            0,
-            currentY,
-            imgWidth,
-            splitHeight, // 元画像の切り抜き範囲
-            0,
-            0,
-            imgWidth,
-            splitHeight // 新キャンバスへの描画範囲
-          );
-
-          // 2. 画像データ化 (JPEGで圧縮してサイズ削減)
-          const pageImgData = pageCanvas.toDataURL("image/jpeg", 0.8);
-
-          // 3. PDFに追加
-          // もし2ページ目以降なら改ページ
-          if (currentY > 0) {
-            pdf.addPage();
-          }
-
-          // PDF上の高さを計算 (mm)
-          const heightOnPdf = splitHeight / pxPerMm;
-
-          pdf.addImage(
-            pageImgData,
-            "JPEG",
-            margin, // X: 左余白
-            margin, // Y: 上余白
-            contentWidthMm,
-            heightOnPdf
-          );
-        }
-
-        // 次の開始位置へ進める
-        currentY += splitHeight;
+        answerDoc.text(splitText[i], margin, currentY);
+        currentY += lineHeight;
       }
 
-      // 5. 答案を追加（新しいページ）
-      pdf.addPage();
-      pdf.setFont("MPLUS1p-Regular", "normal");
-      pdf.setFontSize(12);
-      pdf.text("答案", margin, margin);
+      const answerPdfBytes = answerDoc.output("arraybuffer");
 
-      // 答案も余白を考慮して折り返し処理
-      const splitAnswer = pdf.splitTextToSize(answerText, contentWidthMm);
-      pdf.text(splitAnswer, margin, margin + 10);
+      // 3. 問題PDFと結合
+      const rawProblemPdf = questionPanelRef.current?.getPdfData();
+      let mergedPdf: PDFDocument;
 
-      // 6. PDFをダウンロード
-      pdf.save("cbt-submission.pdf");
+      if (rawProblemPdf) {
+        mergedPdf = await PDFDocument.load(rawProblemPdf);
+      } else {
+        mergedPdf = await PDFDocument.create();
+      }
+
+      const loadedAnswerPdf = await PDFDocument.load(answerPdfBytes);
+      const copiedPages = await mergedPdf.copyPages(
+        loadedAnswerPdf,
+        loadedAnswerPdf.getPageIndices()
+      );
+
+      copiedPages.forEach((page) => mergedPdf.addPage(page));
+
+      const pdfBytes = await mergedPdf.save();
+      const blob = new Blob([pdfBytes as unknown as BlobPart], {
+        type: "application/pdf",
+      });
+
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = "cbt-submission.pdf";
+      link.click();
+      URL.revokeObjectURL(link.href);
+
+      // --- 完了後のデータクリア ---
+
+      // 1. LocalStorage削除
+      localStorage.removeItem("cbt_answer_text");
+      localStorage.removeItem("cbt_memo_content");
+      localStorage.removeItem("cbt_time_left");
+      localStorage.removeItem("cbt_timer_active");
+
+      // 2. IndexedDB削除 (PDF)
+      await clearPdfFromDB();
+
+      // 3. Stateリセット
+      setAnswerText("");
+      setMemoContent("");
+      setTimeLeft(7200);
+      setInitialPdfData(null); // PDF表示もクリア
+
+      alert("答案をダウンロードしました。お疲れ様でした。");
     } catch (error) {
       console.error("PDF generation failed:", error);
       alert(
-        "PDFの生成に失敗しました。" +
+        "PDFの生成に失敗しました。\n" +
           (error instanceof Error ? error.message : String(error))
       );
     } finally {
@@ -290,6 +336,7 @@ function App() {
     }
   };
 
+  // --- パネル操作系 (変更なし) ---
   const togglePanel = (type: PanelType) => {
     let newPanels = [...visiblePanels];
     if (newPanels.includes(type)) {
@@ -306,26 +353,14 @@ function App() {
   const handleSwap = () => {
     if (activePanels.length < 2) return;
     const newOrder = [...panelOrder];
-
-    if (activePanels.length === 2) {
-      const p1 = activePanels[0];
-      const p2 = activePanels[1];
-      const idx1 = newOrder.indexOf(p1);
-      const idx2 = newOrder.indexOf(p2);
-      newOrder[idx1] = p2;
-      newOrder[idx2] = p1;
-    } else if (activePanels.length === 3) {
-      const p0 = activePanels[0];
-      const p1 = activePanels[1];
-      const p2 = activePanels[2];
-      const idx0 = newOrder.indexOf(p0);
-      const idx1 = newOrder.indexOf(p1);
-      const idx2 = newOrder.indexOf(p2);
-      newOrder[idx0] = p2;
-      newOrder[idx1] = p0;
-      newOrder[idx2] = p1;
+    const idx1 = panelOrder.indexOf(activePanels[0]);
+    const idx2 = panelOrder.indexOf(activePanels[1]);
+    if (idx1 !== -1 && idx2 !== -1) {
+      const temp = newOrder[idx1];
+      newOrder[idx1] = newOrder[idx2];
+      newOrder[idx2] = temp;
+      setPanelOrder(newOrder);
     }
-    setPanelOrder(newOrder);
   };
 
   const handleMouseDown = (direction: "horizontal" | "vertical") => {
@@ -340,11 +375,13 @@ function App() {
       const rect = containerRef.current.getBoundingClientRect();
 
       if (resizingDirection === "horizontal") {
-        const newWidth = ((e.clientX - rect.left) / rect.width) * 100;
-        setHorizontalSplit(Math.min(Math.max(newWidth, 10), 90));
-      } else if (resizingDirection === "vertical") {
-        const newHeight = ((e.clientY - rect.top) / rect.height) * 100;
-        setVerticalSplit(Math.min(Math.max(newHeight, 10), 90));
+        const x = e.clientX - rect.left;
+        const widthPercent = (x / rect.width) * 100;
+        setHorizontalSplit(Math.min(Math.max(widthPercent, 10), 90));
+      } else {
+        const y = e.clientY - rect.top;
+        const heightPercent = (y / rect.height) * 100;
+        setVerticalSplit(Math.min(Math.max(heightPercent, 10), 90));
       }
     };
 
@@ -369,6 +406,8 @@ function App() {
             ref={questionPanelRef}
             width={500}
             onPdfLoaded={handlePdfLoaded}
+            initialPdfData={initialPdfData}
+            onPdfChange={handlePdfChange}
           />
         );
       case PanelType.LAW:
@@ -422,14 +461,13 @@ function App() {
           flexDirection: "row",
         }}
       >
+        {/* 左パネル */}
         {leftPanelType && (
           <Box
-            key={leftPanelType}
             sx={{
               width: rightTopPanelType ? `${horizontalSplit}%` : "100%",
               height: "100%",
               position: "relative",
-              transition: resizingDirection ? "none" : "width 0.2s",
             }}
           >
             {renderPanelContent(leftPanelType)}
@@ -439,6 +477,7 @@ function App() {
           </Box>
         )}
 
+        {/* リサイズバー (横) */}
         {leftPanelType && rightTopPanelType && (
           <Box
             sx={{
@@ -446,25 +485,12 @@ function App() {
               cursor: "col-resize",
               bgcolor: "grey.300",
               zIndex: 50,
-              display: "flex",
-              justifyContent: "center",
-              alignItems: "center",
-              transition: "background-color 0.2s",
-              "&:hover": { bgcolor: "primary.light" },
             }}
             onMouseDown={() => handleMouseDown("horizontal")}
-          >
-            <Box
-              sx={{
-                width: 2,
-                height: 32,
-                bgcolor: "grey.400",
-                borderRadius: 1,
-              }}
-            />
-          </Box>
+          />
         )}
 
+        {/* 右側エリア */}
         {rightTopPanelType && (
           <Box
             sx={{
@@ -475,13 +501,12 @@ function App() {
               minWidth: 0,
             }}
           >
+            {/* 右上 */}
             <Box
-              key={rightTopPanelType}
               sx={{
                 height: rightBottomPanelType ? `${verticalSplit}%` : "100%",
                 width: "100%",
                 position: "relative",
-                transition: resizingDirection ? "none" : "height 0.2s",
               }}
             >
               {renderPanelContent(rightTopPanelType)}
@@ -490,6 +515,7 @@ function App() {
               )}
             </Box>
 
+            {/* リサイズバー (縦) */}
             {rightTopPanelType && rightBottomPanelType && (
               <Box
                 sx={{
@@ -497,34 +523,14 @@ function App() {
                   cursor: "row-resize",
                   bgcolor: "grey.300",
                   zIndex: 50,
-                  display: "flex",
-                  justifyContent: "center",
-                  alignItems: "center",
-                  transition: "background-color 0.2s",
-                  "&:hover": { bgcolor: "primary.light" },
                 }}
                 onMouseDown={() => handleMouseDown("vertical")}
-              >
-                <Box
-                  sx={{
-                    height: 2,
-                    width: 32,
-                    bgcolor: "grey.400",
-                    borderRadius: 1,
-                  }}
-                />
-              </Box>
+              />
             )}
 
+            {/* 右下 */}
             {rightBottomPanelType && (
-              <Box
-                key={rightBottomPanelType}
-                sx={{
-                  flex: 1,
-                  width: "100%",
-                  position: "relative",
-                }}
-              >
+              <Box sx={{ flex: 1, width: "100%", position: "relative" }}>
                 {renderPanelContent(rightBottomPanelType)}
                 {resizingDirection && (
                   <Box sx={{ position: "absolute", inset: 0, zIndex: 100 }} />
@@ -534,18 +540,16 @@ function App() {
           </Box>
         )}
 
-        {showMemo && <MemoPad onClose={() => setShowMemo(false)} />}
+        <Box sx={{ display: showMemo ? "block" : "none" }}>
+          <MemoPad
+            value={memoContent}
+            onChange={setMemoContent}
+            onClose={() => setShowMemo(false)}
+          />
+        </Box>
 
-        <Backdrop
-          sx={{
-            color: "#fff",
-            zIndex: (theme) => theme.zIndex.drawer + 1,
-            flexDirection: "column",
-          }}
-          open={isGeneratingPdf}
-        >
+        <Backdrop open={isGeneratingPdf} sx={{ color: "#fff", zIndex: 9999 }}>
           <CircularProgress color="inherit" />
-          <Typography sx={{ mt: 2 }}>PDFを生成しています...</Typography>
         </Backdrop>
       </Box>
     </Box>

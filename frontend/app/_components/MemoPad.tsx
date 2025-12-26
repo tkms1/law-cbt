@@ -1,141 +1,170 @@
+// _components/MemoPad.tsx
 import React, { useState } from "react";
-import { Box, Paper, Typography, IconButton } from "@mui/material";
+import { Paper, Box, TextField, Button, ButtonGroup } from "@mui/material";
 import {
-  VerticalSplit,
-  ViewSidebar,
-  Fullscreen,
-  Close,
+  ViewSidebar, // 左右配置用のアイコン（回転させて使用）
+  Fullscreen, // 全画面用
 } from "@mui/icons-material";
 
 interface MemoPadProps {
   onClose: () => void;
+  value: string;
+  onChange: (value: string) => void;
 }
 
-export const MemoPad: React.FC<MemoPadProps> = ({ onClose }) => {
-  const [position, setPosition] = useState<"left" | "right" | "full">("right");
-  const [content, setContent] = useState("");
+type LayoutMode = "left" | "right" | "full";
 
-  const getStyle = () => {
-    switch (position) {
+export const MemoPad: React.FC<MemoPadProps> = ({
+  onClose,
+  value,
+  onChange,
+}) => {
+  // 表示モードの状態管理（デフォルトは右配置）
+  const [layoutMode, setLayoutMode] = useState<LayoutMode>("right");
+
+  // モードに応じたスタイルを決定する関数
+  const getPaperStyles = () => {
+    const baseStyles = {
+      position: "absolute" as const,
+      top: 64, // ヘッダーの高さ分下げる
+      height: "calc(100% - 64px)", // ヘッダー分を引いた高さ
+      zIndex: 1200,
+      display: "flex",
+      flexDirection: "column" as const,
+      borderRadius: 0,
+      border: "1px solid rgba(0,0,0,0.12)",
+      transition: "all 0.2s ease", // 配置変更時のアニメーション
+    };
+
+    switch (layoutMode) {
       case "left":
-        return { left: 0, top: 64, bottom: 0, width: "33%" };
-      case "right":
-        return { right: 0, top: 64, bottom: 0, width: "33%" };
+        return {
+          ...baseStyles,
+          left: 0,
+          right: "auto",
+          width: 400, // 左配置時の幅（少し広めに設定）
+          borderRight: "1px solid rgba(0,0,0,0.12)",
+          borderLeft: "none",
+        };
       case "full":
-        return { inset: 0, top: 64, zIndex: 1300 };
+        return {
+          ...baseStyles,
+          left: 0,
+          right: 0,
+          width: "100%", // 全画面
+        };
+      case "right":
+      default:
+        return {
+          ...baseStyles,
+          left: "auto",
+          right: 0,
+          width: 400, // 右配置時の幅
+          borderLeft: "1px solid rgba(0,0,0,0.12)",
+          borderRight: "none",
+        };
     }
   };
 
+  // 共通のボタンスタイル（マニュアルのダークグレーのボタン風）
+  const modeButtonStyle = {
+    bgcolor: "#455a64", // ブルーグレー（マニュアルに近い色）
+    color: "#fff",
+    fontSize: "0.75rem",
+    padding: "4px 10px",
+    "&:hover": {
+      bgcolor: "#37474f",
+    },
+    display: "flex",
+    flexDirection: "column" as const,
+    lineHeight: 1.2,
+    minWidth: 60,
+    textTransform: "none" as const,
+  };
+
   return (
-    <Paper
-      elevation={8}
-      sx={{
-        position: "fixed",
-        display: "flex",
-        flexDirection: "column",
-        zIndex: 1200,
-        transition: "all 0.3s",
-        border: 2,
-        borderColor: "primary.main",
-        ...getStyle(),
-      }}
-    >
+    <Paper elevation={4} sx={getPaperStyles()}>
+      {/* ツールバーエリア（マニュアルP15のデザインを再現） */}
       <Box
         sx={{
-          bgcolor: "primary.main",
-          color: "primary.contrastText",
-          px: 1,
-          py: 0.5,
+          p: 1,
           display: "flex",
           alignItems: "center",
-          justifyContent: "space-between",
-          flexShrink: 0,
+          justifyContent: "space-between", // 左寄せと右寄せに分割
+          bgcolor: "#fff", // マニュアルに合わせて白背景
+          borderBottom: "1px solid rgba(0,0,0,0.12)",
+          minHeight: 50,
         }}
       >
-        <Typography variant="subtitle2" sx={{ fontWeight: "bold" }}>
-          メモ
-        </Typography>
-        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-          <Box
-            sx={{
-              display: "flex",
-              bgcolor: "primary.dark",
-              borderRadius: 1,
-              mr: 1,
-            }}
+        {/* 配置切り替えボタン群 */}
+        <ButtonGroup variant="contained" sx={{ boxShadow: "none", gap: 1 }}>
+          <Button
+            sx={modeButtonStyle}
+            onClick={() => setLayoutMode("left")}
+            startIcon={
+              <ViewSidebar sx={{ transform: "rotate(180deg)", mb: 0.5 }} />
+            }
           >
-            <IconButton
-              size="small"
-              onClick={() => setPosition("left")}
-              sx={{
-                color: "white",
-                p: 0.5,
-                bgcolor: position === "left" ? "primary.light" : "transparent",
-                borderRadius: 0.5,
-              }}
-            >
-              <ViewSidebar sx={{ fontSize: 14, transform: "scaleX(-1)" }} />
-            </IconButton>
-            <IconButton
-              size="small"
-              onClick={() => setPosition("full")}
-              sx={{
-                color: "white",
-                p: 0.5,
-                bgcolor: position === "full" ? "primary.light" : "transparent",
-                borderRadius: 0.5,
-              }}
-            >
-              <Fullscreen sx={{ fontSize: 14 }} />
-            </IconButton>
-            <IconButton
-              size="small"
-              onClick={() => setPosition("right")}
-              sx={{
-                color: "white",
-                p: 0.5,
-                bgcolor: position === "right" ? "primary.light" : "transparent",
-                borderRadius: 0.5,
-              }}
-            >
-              <ViewSidebar sx={{ fontSize: 14 }} />
-            </IconButton>
-          </Box>
-          <IconButton
-            size="small"
-            onClick={onClose}
-            sx={{
-              bgcolor: "error.main",
-              color: "white",
-              px: 1,
-              py: 0.2,
-              borderRadius: 1,
-              fontSize: 10,
-              "&:hover": { bgcolor: "error.dark" },
-              width: "auto",
-            }}
+            左配置
+          </Button>
+
+          <Button
+            sx={modeButtonStyle}
+            onClick={() => setLayoutMode("full")}
+            startIcon={<Fullscreen sx={{ mb: 0.5 }} />}
           >
-            <Typography variant="caption" fontWeight="bold">
-              閉じる
-            </Typography>
-          </IconButton>
-        </Box>
+            全画面
+          </Button>
+
+          <Button
+            sx={modeButtonStyle}
+            onClick={() => setLayoutMode("right")}
+            startIcon={<ViewSidebar sx={{ mb: 0.5 }} />}
+          >
+            右配置
+          </Button>
+        </ButtonGroup>
+
+        {/* 閉じるボタン（マニュアルの青いボタン） */}
+        <Button
+          variant="contained"
+          onClick={onClose}
+          sx={{
+            bgcolor: "#1976d2", // 明るめの青
+            fontWeight: "bold",
+            minWidth: 80,
+            boxShadow: 2,
+            "&:hover": {
+              bgcolor: "#1565c0",
+            },
+          }}
+        >
+          閉じる
+        </Button>
       </Box>
-      <textarea
-        style={{
-          flex: 1,
-          padding: "16px",
-          resize: "none",
-          outline: "none",
-          fontFamily: "monospace",
-          fontSize: "14px",
-          backgroundColor: "#fff9c4", // Light yellow
-          border: "none",
-        }}
-        placeholder="メモを入力してください..."
-        value={content}
-        onChange={(e) => setContent(e.target.value)}
-      />
+
+      {/* テキスト入力エリア */}
+      <Box sx={{ flexGrow: 1, p: 2 }}>
+        <TextField
+          multiline
+          fullWidth
+          variant="standard"
+          placeholder="ここにメモを入力..."
+          InputProps={{ disableUnderline: true }}
+          sx={{
+            height: "100%",
+            overflow: "auto",
+            "& .MuiInputBase-root": {
+              alignItems: "flex-start", // テキスト開始位置を左上に
+              height: "100%",
+              fontSize: "1rem",
+              lineHeight: 1.6,
+            },
+          }}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+        />
+      </Box>
     </Paper>
   );
 };
