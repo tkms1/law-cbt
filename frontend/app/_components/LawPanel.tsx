@@ -1,5 +1,10 @@
-// LawPanel.tsx
-import React, { useState, useRef, useCallback } from "react";
+import React, {
+  useState,
+  useRef,
+  useCallback,
+  useEffect,
+  useMemo,
+} from "react";
 import {
   Box,
   TextField,
@@ -11,6 +16,13 @@ import {
   InputAdornment,
   Button,
   Collapse,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  ListItem,
+  Divider,
+  Chip,
 } from "@mui/material";
 import {
   Search,
@@ -20,11 +32,23 @@ import {
   Article,
   ExpandLess,
   ExpandMore,
+  StickyNote2,
+  Close,
 } from "@mui/icons-material";
 import { accordionItems, ButtonItem } from "../../constants";
 import { LawData } from "@/type/LawDataZod";
 import TopMain from "./TopMain";
 import { ColorSchemeType } from "../../type/type";
+
+// --- 型定義 ---
+interface StickyNote {
+  id: string; // DOM ID (例: Article-12-Paragraph-1-Item-1)
+  lawId: string; // 法令ID (例: 018)
+  lawName: string; // 法令名 (例: 民法)
+  label: string; // 表示ラベル (例: 第12条 第1項 第1号)
+  text: string; // テキストの保存データ
+  createdAt: number; // ソート用
+}
 
 // --- ユーティリティ ---
 const numberToKanji = (num: number): string => {
@@ -60,7 +84,66 @@ const numberToKanji = (num: number): string => {
   return String(num);
 };
 
-// ▼ 追加: 配色に応じたスタイル定義を取得するヘルパー
+// 付箋IDから表示用ラベルを解析するヘルパー
+const parseStickyLabel = (id: string): string => {
+  // 1. 見出し (Caption)
+  const captionMatch = id.match(/^Article-(.+?)-Caption$/);
+  if (captionMatch) {
+    return `第${captionMatch[1]}条 (見出し)`;
+  }
+
+  // 2. 号 (Item)
+  const itemMatch = id.match(/^Article-(.+?)-Paragraph-(.+?)-Item-(.+?)$/);
+  if (itemMatch) {
+    return `第${itemMatch[1]}条 第${itemMatch[2]}項 第${itemMatch[3]}号`;
+  }
+
+  // 3. 項 (Paragraph)
+  const paragraphMatch = id.match(/^Article-(.+?)-Paragraph-(.+?)$/);
+  if (paragraphMatch)
+    return `第${paragraphMatch[1]}条 第${paragraphMatch[2]}項`;
+
+  // 4. 条文タイトル (Article)
+  const articleMatch = id.match(/^Article-(.+?)$/);
+  if (articleMatch) return `第${articleMatch[1]}条`;
+
+  // 5. 附則 (SupplProvision)
+  const supplMatch = id.match(/^(.+?)-Paragraph-(.+?)$/);
+  if (supplMatch) return `附則(${supplMatch[1]}) 第${supplMatch[2]}項`;
+
+  return id;
+};
+
+// DOM IDの生成ロジック（スクロール先特定用）
+const getDomIdFromStickyId = (id: string): string => {
+  // 1. 見出し
+  const captionMatch = id.match(/^Article-(.+?)-Caption$/);
+  if (captionMatch) {
+    return `top-article-${captionMatch[1]}-caption`;
+  }
+
+  // 2. 号 (Item)
+  const itemMatch = id.match(/^Article-(.+?)-Paragraph-(.+?)-Item-(.+?)$/);
+  if (itemMatch) {
+    return `${itemMatch[1]}-paragraph-${itemMatch[2]}-item-${itemMatch[3]}`;
+  }
+
+  // 3. 項
+  const paragraphMatch = id.match(/^Article-(.+?)-Paragraph-(.+?)$/);
+  if (paragraphMatch)
+    return `${paragraphMatch[1]}-paragraph-${paragraphMatch[2]}`;
+
+  // 4. 条文タイトル
+  const articleMatch = id.match(/^Article-(.+?)$/);
+  if (articleMatch) return `top-article-${articleMatch[1]}`;
+
+  // 5. 附則
+  const supplMatch = id.match(/^(.+?)-Paragraph-(.+?)$/);
+  if (supplMatch) return `${supplMatch[1]}-paragraph-${supplMatch[2]}`;
+
+  return "";
+};
+
 const getColorStyles = (scheme: ColorSchemeType) => {
   switch (scheme) {
     case "yellow":
@@ -99,21 +182,22 @@ const getColorStyles = (scheme: ColorSchemeType) => {
   }
 };
 
+const STORAGE_KEY = "cbt_sticky_notes";
+
 interface LawPanelProps {
   colorScheme?: ColorSchemeType;
 }
 
 export const LawPanel: React.FC<LawPanelProps> = ({ colorScheme = "none" }) => {
-  // --- 幅管理用 ---
   const [sidebarWidth, setSidebarWidth] = useState(260);
   const [isResizing, setIsResizing] = useState(false);
   const [showToc, setShowToc] = useState(true);
 
-  // LawPanel全体のコンテナ位置を取得するためのRef
   const containerRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
 
-  // --- その他のState ---
-  const [selectedLawId, setSelectedLawId] = useState("018");
+  const [selectedLawId, setSelectedLawId] = useState("018"); // 初期値
+  const [selectedLawName, setSelectedLawName] = useState("民法"); // 初期名称
   const [lawData, setLawData] = useState<LawData>();
   const [tocSearchQuery, setTocSearchQuery] = useState("");
   const [articleNum, setArticleNum] = useState("");
@@ -124,13 +208,45 @@ export const LawPanel: React.FC<LawPanelProps> = ({ colorScheme = "none" }) => {
     民事系科目: true,
   });
 
-  const contentRef = useRef<HTMLDivElement>(null);
+  // 付箋データ
+  const [stickyNotes, setStickyNotes] = useState<StickyNote[]>([]);
+  // ロード完了フラグ
+  const [isStickyLoaded, setIsStickyLoaded] = useState(false);
 
-  // ▼ 配色スタイルの取得
+  const [isStickyListOpen, setIsStickyListOpen] = useState(false);
+
+  // スクロール待機用ID
+  const [pendingScrollId, setPendingScrollId] = useState<string | null>(null);
+
   const styles = getColorStyles(colorScheme);
   const isDark = colorScheme === "black";
 
-  // --- リサイズ機能の実装 ---
+  // LocalStorageからロード (マウント時のみ)
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        setStickyNotes(JSON.parse(saved));
+      }
+    } catch (e) {
+      console.error("Failed to load sticky notes", e);
+    } finally {
+      setIsStickyLoaded(true);
+    }
+  }, []);
+
+  // LocalStorageへ保存 (変更時)
+  useEffect(() => {
+    if (isStickyLoaded) {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(stickyNotes));
+      } catch (e) {
+        console.error("Failed to save sticky notes", e);
+      }
+    }
+  }, [stickyNotes, isStickyLoaded]);
+
+  // --- リサイズ機能 ---
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -172,12 +288,80 @@ export const LawPanel: React.FC<LawPanelProps> = ({ colorScheme = "none" }) => {
       return true;
     });
 
-  // --- イベントハンドラ ---
   const handleToggleCategory = (categoryTitle: string) => {
     setOpenCategories((prev) => ({
       ...prev,
       [categoryTitle]: !prev[categoryTitle],
     }));
+  };
+
+  // 現在表示中の法令に紐づく付箋IDセット
+  const currentLawStickyIds = useMemo(() => {
+    const ids = new Set<string>();
+    stickyNotes.forEach((note) => {
+      if (note.lawId === selectedLawId) {
+        ids.add(note.id);
+      }
+    });
+    return ids;
+  }, [stickyNotes, selectedLawId]);
+
+  // 付箋のトグル処理
+  const handleToggleSticky = useCallback(
+    (id: string) => {
+      setStickyNotes((prev) => {
+        const exists = prev.find(
+          (n) => n.id === id && n.lawId === selectedLawId
+        );
+
+        if (exists) {
+          // 削除
+          return prev.filter(
+            (n) => !(n.id === id && n.lawId === selectedLawId)
+          );
+        } else {
+          // 追加: DOMからテキストを取得
+          const domId = getDomIdFromStickyId(id);
+          let textContent = "（テキストを取得できませんでした）";
+
+          if (contentRef.current && domId) {
+            const targetElement = contentRef.current.querySelector(
+              `[id='${domId}']`
+            );
+            if (targetElement && targetElement.textContent) {
+              textContent = targetElement.textContent
+                .replace(/\s+/g, " ")
+                .trim();
+            }
+          }
+
+          const newNote: StickyNote = {
+            id,
+            lawId: selectedLawId,
+            lawName: selectedLawName,
+            label: parseStickyLabel(id),
+            text: textContent,
+            createdAt: Date.now(),
+          };
+          return [...prev, newNote];
+        }
+      });
+    },
+    [selectedLawId, selectedLawName]
+  );
+
+  // 法令データ取得
+  const fetchLawData = async (lawId: string) => {
+    // ★重要: 古いデータを一旦クリアして、ID重複や描画待ちを防ぐ
+    setLawData(undefined);
+    try {
+      const res = await fetch(`http://localhost:3000/api?lawId=${lawId}`);
+      if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+      const json = await res.json();
+      setLawData(json);
+    } catch (error) {
+      console.error("Fetch error:", error);
+    }
   };
 
   const handleLawClick = async (lawName: string) => {
@@ -192,21 +376,81 @@ export const LawPanel: React.FC<LawPanelProps> = ({ colorScheme = "none" }) => {
     if (foundButton) {
       const lawId = foundButton.link.replace(/^\//, "");
       setSelectedLawId(lawId);
-      try {
-        // const res = await fetch(
-        //   `https://law-cbt.vercel.app/api?lawId=${lawId}`
-        // );
-        const res = await fetch(
-          `http://localhost:3000/api?lawId=${lawId}`
-        );
-        if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
-        const json = await res.json();
-        setLawData(json);
-      } catch (error) {
-        console.error("Fetch error:", error);
-      }
+      setSelectedLawName(lawName);
+      await fetchLawData(lawId);
     }
   };
+
+  // リトライ機能付きのスクロール関数
+  const attemptScrollToElement = (domId: string, maxRetries = 10) => {
+    let retryCount = 0;
+
+    const checkAndScroll = () => {
+      if (!contentRef.current) return;
+      const targetElement = contentRef.current.querySelector(`[id='${domId}']`);
+
+      if (targetElement) {
+        targetElement.scrollIntoView({ behavior: "smooth", block: "center" });
+      } else if (retryCount < maxRetries) {
+        retryCount++;
+        setTimeout(checkAndScroll, 100);
+      }
+    };
+
+    checkAndScroll();
+  };
+
+  // 付箋一覧からのジャンプ処理
+  const handleJumpToSticky = async (note: StickyNote) => {
+    setIsStickyListOpen(false);
+    const domId = getDomIdFromStickyId(note.id);
+
+    if (note.lawId !== selectedLawId) {
+      setSelectedLawId(note.lawId);
+      setSelectedLawName(note.lawName);
+      setPendingScrollId(domId);
+      // fetchLawData内でデータクリアされるため、useEffectのポーリングが正しく機能する
+      await fetchLawData(note.lawId);
+    } else {
+      // 同一法令内の場合
+      attemptScrollToElement(domId);
+    }
+  };
+
+  // 自動スクロール (useEffect)
+  // 法令データ切り替え後の描画待ちに対応するため、ポーリング(リトライ)を行う
+  useEffect(() => {
+    if (!pendingScrollId || !lawData) return;
+
+    let retries = 0;
+    const maxRetries = 20; // 20回 * 100ms = 最大2秒待機
+    let timeoutId: NodeJS.Timeout;
+
+    const scrollLoop = () => {
+      if (!contentRef.current) return;
+
+      const target = contentRef.current.querySelector(
+        `[id='${pendingScrollId}']`
+      );
+
+      if (target) {
+        target.scrollIntoView({ behavior: "smooth", block: "center" });
+        setPendingScrollId(null); // 成功したらクリア
+      } else if (retries < maxRetries) {
+        retries++;
+        timeoutId = setTimeout(scrollLoop, 100); // まだ見つからなければ待機
+      } else {
+        // タイムアウト
+        setPendingScrollId(null);
+      }
+    };
+
+    // 処理開始
+    scrollLoop();
+
+    // クリーンアップ
+    return () => clearTimeout(timeoutId);
+  }, [lawData, pendingScrollId]);
 
   const handleJumpToArticle = () => {
     if (!contentRef.current || !articleNum) return;
@@ -218,15 +462,13 @@ export const LawPanel: React.FC<LawPanelProps> = ({ colorScheme = "none" }) => {
     } else {
       candidates.push(`top-article-${articleNum}`);
     }
+
     for (const id of candidates) {
       const el = contentRef.current.querySelector(`#${CSS.escape(id)}`);
       if (el) {
         targetElement = el;
         break;
       }
-    }
-    if (!targetElement) {
-      // (省略: 漢数字検索ロジック - 以前のコードと同じ)
     }
     if (targetElement) {
       targetElement.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -245,7 +487,6 @@ export const LawPanel: React.FC<LawPanelProps> = ({ colorScheme = "none" }) => {
         flexDirection: "column",
         height: "100%",
         width: "100%",
-        // ▼ 配色適用
         bgcolor: styles.bg,
         color: styles.text,
         borderRight: 1,
@@ -256,7 +497,6 @@ export const LawPanel: React.FC<LawPanelProps> = ({ colorScheme = "none" }) => {
       <Box
         sx={{
           height: 44,
-          // ▼ 配色適用
           bgcolor: colorScheme === "none" ? "grey.100" : styles.subBg,
           borderBottom: 1,
           borderColor: styles.border,
@@ -265,7 +505,6 @@ export const LawPanel: React.FC<LawPanelProps> = ({ colorScheme = "none" }) => {
           flexShrink: 0,
         }}
       >
-        {/* 左側：目次検索エリア */}
         <Box
           sx={{
             width: showToc ? sidebarWidth : "auto",
@@ -298,7 +537,6 @@ export const LawPanel: React.FC<LawPanelProps> = ({ colorScheme = "none" }) => {
                     />
                   </InputAdornment>
                 ),
-                // ▼ 配色適用 (黒背景時の入力欄)
                 sx: {
                   height: 32,
                   fontSize: 13,
@@ -334,7 +572,6 @@ export const LawPanel: React.FC<LawPanelProps> = ({ colorScheme = "none" }) => {
           </IconButton>
         </Box>
 
-        {/* 右側：条文操作エリア */}
         <Box sx={{ display: "flex", alignItems: "center", px: 1, flex: 1 }}>
           <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
             <Typography
@@ -351,7 +588,6 @@ export const LawPanel: React.FC<LawPanelProps> = ({ colorScheme = "none" }) => {
               sx={{
                 display: "flex",
                 alignItems: "center",
-                // ▼ 配色適用
                 bgcolor: styles.inputBg,
                 border: 1,
                 borderColor: styles.border,
@@ -379,7 +615,6 @@ export const LawPanel: React.FC<LawPanelProps> = ({ colorScheme = "none" }) => {
                   outline: "none",
                   fontSize: 12,
                   margin: "0 4px",
-                  // ▼ 配色適用
                   backgroundColor: "transparent",
                   color: isDark ? "#fff" : "inherit",
                 }}
@@ -403,7 +638,6 @@ export const LawPanel: React.FC<LawPanelProps> = ({ colorScheme = "none" }) => {
                   outline: "none",
                   fontSize: 12,
                   margin: "0 4px",
-                  // ▼ 配色適用
                   backgroundColor: "transparent",
                   color: isDark ? "#fff" : "inherit",
                 }}
@@ -433,6 +667,7 @@ export const LawPanel: React.FC<LawPanelProps> = ({ colorScheme = "none" }) => {
           <Button
             variant="contained"
             size="small"
+            onClick={() => setIsStickyListOpen(true)}
             sx={{
               bgcolor: "#b45309",
               "&:hover": { bgcolor: "#92400e" },
@@ -462,15 +697,13 @@ export const LawPanel: React.FC<LawPanelProps> = ({ colorScheme = "none" }) => {
         </Box>
       </Box>
 
-      {/* Main Content Split */}
+      {/* Main Content */}
       <Box sx={{ display: "flex", flex: 1, overflow: "hidden" }}>
-        {/* TOC Sidebar */}
         {showToc && (
           <Box
             sx={{
               width: sidebarWidth,
               transition: isResizing ? "none" : "width 0.2s",
-              // ▼ 配色適用
               bgcolor: isDark
                 ? "#1e1e1e"
                 : colorScheme === "none"
@@ -494,7 +727,6 @@ export const LawPanel: React.FC<LawPanelProps> = ({ colorScheme = "none" }) => {
                       sx={{
                         py: 0.5,
                         minHeight: 32,
-                        // ▼ 配色適用
                         bgcolor: isDark
                           ? "#333"
                           : colorScheme === "none"
@@ -527,7 +759,6 @@ export const LawPanel: React.FC<LawPanelProps> = ({ colorScheme = "none" }) => {
                         primaryTypographyProps={{
                           fontSize: 12,
                           fontWeight: "bold",
-                          // ▼ 配色適用
                           color: isDark ? "#eee" : "text.primary",
                         }}
                       />
@@ -552,7 +783,6 @@ export const LawPanel: React.FC<LawPanelProps> = ({ colorScheme = "none" }) => {
                                   color: "primary.contrastText",
                                   "&:hover": { bgcolor: "primary.main" },
                                 },
-                                // ▼ 配色適用 (非選択時)
                                 color: isDark ? "#ddd" : "inherit",
                               }}
                             >
@@ -578,7 +808,6 @@ export const LawPanel: React.FC<LawPanelProps> = ({ colorScheme = "none" }) => {
           </Box>
         )}
 
-        {/* --- リサイズハンドル --- */}
         {showToc && (
           <Box
             onMouseDown={handleMouseDown}
@@ -609,13 +838,11 @@ export const LawPanel: React.FC<LawPanelProps> = ({ colorScheme = "none" }) => {
           </Box>
         )}
 
-        {/* Text Area */}
         <Box
           ref={contentRef}
           sx={{
             flex: 1,
             overflowY: "auto",
-            // ▼ 配色適用
             bgcolor: styles.bg,
             color: styles.text,
           }}
@@ -623,9 +850,141 @@ export const LawPanel: React.FC<LawPanelProps> = ({ colorScheme = "none" }) => {
           {isResizing && (
             <Box sx={{ position: "absolute", inset: 0, zIndex: 100 }} />
           )}
-          {lawData && <TopMain data={lawData} />}
+          {lawData && (
+            <TopMain
+              data={lawData}
+              stickyNotes={currentLawStickyIds}
+              onToggleSticky={handleToggleSticky}
+              colorScheme={colorScheme}
+            />
+          )}
         </Box>
       </Box>
+
+      {/* Sticky List Dialog */}
+      <Dialog
+        open={isStickyListOpen}
+        onClose={() => setIsStickyListOpen(false)}
+        fullWidth
+        maxWidth="sm"
+      >
+        <DialogTitle
+          sx={{ fontWeight: "bold", borderBottom: 1, borderColor: "divider" }}
+        >
+          <Box display="flex" alignItems="center" gap={1}>
+            <StickyNote2 color="primary" />
+            付箋一覧
+          </Box>
+        </DialogTitle>
+        <DialogContent dividers sx={{ p: 0 }}>
+          {stickyNotes.length === 0 ? (
+            <Box p={4} textAlign="center" color="text.secondary">
+              <Typography>付箋は登録されていません。</Typography>
+            </Box>
+          ) : (
+            <List>
+              {stickyNotes.map((note, index) => (
+                <React.Fragment key={`${note.lawId}-${note.id}`}>
+                  {index > 0 && <Divider component="li" />}
+                  <ListItem
+                    disablePadding
+                    secondaryAction={
+                      <IconButton
+                        edge="end"
+                        aria-label="delete"
+                        onClick={() => {
+                          setStickyNotes((prev) =>
+                            prev.filter(
+                              (n) =>
+                                !(n.id === note.id && n.lawId === note.lawId)
+                            )
+                          );
+                        }}
+                        sx={{ mr: 0.5, color: "grey.500" }}
+                      >
+                        <Close />
+                      </IconButton>
+                    }
+                  >
+                    <ListItemButton
+                      onClick={() => handleJumpToSticky(note)}
+                      sx={{
+                        py: 1.5,
+                        pr: 7,
+                        alignItems: "flex-start",
+                        flexDirection: "column",
+                      }}
+                    >
+                      <Chip
+                        label={note.lawName}
+                        size="small"
+                        color={
+                          note.lawId === selectedLawId ? "primary" : "default"
+                        }
+                        variant={
+                          note.lawId === selectedLawId ? "filled" : "outlined"
+                        }
+                        sx={{ mb: 0.5, height: 20, fontSize: 10 }}
+                      />
+
+                      <Box
+                        sx={{
+                          display: "flex",
+                          alignItems: "center",
+                          width: "100%",
+                          mb: 0.5,
+                        }}
+                      >
+                        <Typography
+                          variant="subtitle1"
+                          fontWeight="bold"
+                          sx={{ flex: 1 }}
+                        >
+                          {note.label}
+                        </Typography>
+                      </Box>
+
+                      <Typography
+                        variant="body2"
+                        color="text.secondary"
+                        sx={{
+                          display: "-webkit-box",
+                          WebkitLineClamp: 3,
+                          WebkitBoxOrient: "vertical",
+                          overflow: "hidden",
+                          fontSize: 12,
+                        }}
+                      >
+                        {note.text}
+                      </Typography>
+
+                      <Box
+                        sx={{
+                          display: "flex",
+                          alignItems: "center",
+                          mt: 1,
+                          alignSelf: "flex-end",
+                          opacity: 0.7,
+                        }}
+                      >
+                        <Typography variant="caption" sx={{ mr: 0.5 }}>
+                          へ移動
+                        </Typography>
+                        <ArrowForward fontSize="small" />
+                      </Box>
+                    </ListItemButton>
+                  </ListItem>
+                </React.Fragment>
+              ))}
+            </List>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setIsStickyListOpen(false)} color="inherit">
+            閉じる
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 };
