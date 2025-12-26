@@ -355,7 +355,8 @@ export const LawPanel: React.FC<LawPanelProps> = ({ colorScheme = "none" }) => {
     // ★重要: 古いデータを一旦クリアして、ID重複や描画待ちを防ぐ
     setLawData(undefined);
     try {
-      const res = await fetch(`http://localhost:3000/api?lawId=${lawId}`);
+      const res = await fetch(`https://law-cbt.vercel.app/api?lawId=${lawId}`);
+      // const res = await fetch(`http://localhost:3000/api?lawId=${lawId}`);
       if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
       const json = await res.json();
       setLawData(json);
