@@ -186,9 +186,14 @@ const STORAGE_KEY = "cbt_sticky_notes";
 
 interface LawPanelProps {
   colorScheme?: ColorSchemeType;
+  // ★ 修正: 試験中かどうか判定するフラグ
+  isExamActive?: boolean;
 }
 
-export const LawPanel: React.FC<LawPanelProps> = ({ colorScheme = "none" }) => {
+export const LawPanel: React.FC<LawPanelProps> = ({
+  colorScheme = "none",
+  isExamActive = false, // デフォルトfalse
+}) => {
   const [sidebarWidth, setSidebarWidth] = useState(260);
   const [isResizing, setIsResizing] = useState(false);
   const [showToc, setShowToc] = useState(true);
@@ -309,6 +314,9 @@ export const LawPanel: React.FC<LawPanelProps> = ({ colorScheme = "none" }) => {
   // 付箋のトグル処理
   const handleToggleSticky = useCallback(
     (id: string) => {
+      // ★ 修正: 試験中でなければ処理を中断
+      if (!isExamActive) return;
+
       setStickyNotes((prev) => {
         const exists = prev.find(
           (n) => n.id === id && n.lawId === selectedLawId
@@ -347,7 +355,7 @@ export const LawPanel: React.FC<LawPanelProps> = ({ colorScheme = "none" }) => {
         }
       });
     },
-    [selectedLawId, selectedLawName]
+    [selectedLawId, selectedLawName, isExamActive] // dependencyにisExamActiveを追加
   );
 
   // 法令データ取得
@@ -355,8 +363,8 @@ export const LawPanel: React.FC<LawPanelProps> = ({ colorScheme = "none" }) => {
     // ★重要: 古いデータを一旦クリアして、ID重複や描画待ちを防ぐ
     setLawData(undefined);
     try {
-      const res = await fetch(`https://law-cbt.vercel.app/api?lawId=${lawId}`);
-      // const res = await fetch(`http://localhost:3000/api?lawId=${lawId}`);
+      // const res = await fetch(`https://law-cbt.vercel.app/api?lawId=${lawId}`);
+      const res = await fetch(`http://localhost:3000/api?lawId=${lawId}`);
       if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
       const json = await res.json();
       setLawData(json);
@@ -669,9 +677,15 @@ export const LawPanel: React.FC<LawPanelProps> = ({ colorScheme = "none" }) => {
             variant="contained"
             size="small"
             onClick={() => setIsStickyListOpen(true)}
+            // ★ 修正: 試験中でなければボタンを無効化
+            disabled={!isExamActive}
             sx={{
               bgcolor: "#b45309",
               "&:hover": { bgcolor: "#92400e" },
+              "&.Mui-disabled": {
+                bgcolor: "action.disabledBackground",
+                color: "action.disabled",
+              },
               height: 28,
               fontSize: 11,
               px: 1,

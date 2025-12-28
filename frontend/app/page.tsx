@@ -14,7 +14,7 @@ const MemoizedQuestionPanel = memo(QuestionPanel);
 const MemoizedLawPanel = memo(LawPanel);
 const MemoizedAnswerPanel = memo(AnswerPanel);
 
-// --- ヘルパー関数: ArrayBuffer を Base64 文字列に変換 (Buffer非依存) ---
+// --- ヘルパー関数: ArrayBuffer を Base64 文字列に変換 ---
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
   let binary = "";
   const bytes = new Uint8Array(buffer);
@@ -101,6 +101,9 @@ function App() {
   // 初期ロード完了フラグ
   const [isDataLoaded, setIsDataLoaded] = useState(false);
 
+  // コンポーネントリセット用のキー
+  const [resetKey, setResetKey] = useState(0);
+
   const [horizontalSplit, setHorizontalSplit] = useState(50);
   const [verticalSplit, setVerticalSplit] = useState(50);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -112,50 +115,72 @@ function App() {
   const [showMemo, setShowMemo] = useState(false);
   const [colorScheme, setColorScheme] = useState<ColorSchemeType>("none");
 
-  // タイマー設定 (初期値7200秒)
-  const [timeLeft, setTimeLeft] = useState(7200);
+  // タイマー設定 (初期値20秒)
+  const [timeLeft, setTimeLeft] = useState(20);
   const [isTimerActive, setIsTimerActive] = useState(false);
 
   // --- ★★★ データ読み込み処理 (LocalStorage & IndexedDB) ★★★ ---
   useEffect(() => {
-    // 1. LocalStorage (テキストデータ)
-    const savedAnswer = localStorage.getItem("cbt_answer_text");
-    const savedMemo = localStorage.getItem("cbt_memo_content");
-    const savedTime = localStorage.getItem("cbt_time_left");
-    const savedIsActive = localStorage.getItem("cbt_timer_active");
+    const loadData = async () => {
+      const savedAnswer = localStorage.getItem("cbt_answer_text");
+      const savedMemo = localStorage.getItem("cbt_memo_content");
+      const savedTime = localStorage.getItem("cbt_time_left");
+      const savedIsActive = localStorage.getItem("cbt_timer_active");
+      const savedTimestamp = localStorage.getItem("cbt_last_timestamp");
 
-    if (savedAnswer) setAnswerText(savedAnswer);
-    if (savedMemo) setMemoContent(savedMemo);
+      let calculatedTimeLeft = 20;
+      let shouldExpire = false;
 
-    if (savedTime) {
-      const parsedTime = parseInt(savedTime, 10);
-      if (!isNaN(parsedTime) && parsedTime > 0) {
-        setTimeLeft(parsedTime);
-      }
-    }
+      // タイマー経過計算
+      if (savedTime && savedTimestamp) {
+        const storedTimeLeft = parseInt(savedTime, 10);
+        const lastSavedTime = parseInt(savedTimestamp, 10);
+        const now = Date.now();
+        const elapsedSeconds = Math.floor((now - lastSavedTime) / 1000);
+        const realRemainingTime = storedTimeLeft - elapsedSeconds;
 
-    if (savedIsActive === "true") {
-      setIsTimerActive(true);
-    }
-
-    // 2. IndexedDB (PDFデータ)
-    getPdfFromDB()
-      .then((data) => {
-        if (data) {
-          setInitialPdfData(data);
+        if (realRemainingTime <= 0) {
+          shouldExpire = true;
+          calculatedTimeLeft = 0;
+        } else {
+          calculatedTimeLeft = realRemainingTime;
         }
-      })
-      .catch((err) => {
+      } else if (savedTime) {
+        const parsedTime = parseInt(savedTime, 10);
+        if (!isNaN(parsedTime) && parsedTime > 0) {
+          calculatedTimeLeft = parsedTime;
+        }
+      }
+
+      // 復元処理
+      if (savedAnswer) setAnswerText(savedAnswer);
+      if (savedMemo) setMemoContent(savedMemo);
+      setTimeLeft(calculatedTimeLeft);
+
+      // 期限切れでない、かつアクティブだった場合は再開
+      if (!shouldExpire && savedIsActive === "true" && calculatedTimeLeft > 0) {
+        setIsTimerActive(true);
+      } else {
+        setIsTimerActive(false);
+      }
+
+      // PDFの復元
+      try {
+        const pdfData = await getPdfFromDB();
+        if (pdfData) {
+          setInitialPdfData(pdfData);
+        }
+      } catch (err) {
         console.error("Failed to load PDF from DB:", err);
-      })
-      .finally(() => {
-        // 全てのロードが完了したらフラグを立てる
-        setIsDataLoaded(true);
-      });
+      }
+
+      setIsDataLoaded(true);
+    };
+
+    loadData();
   }, []);
 
-  // --- ★★★ データ保存処理 ★★★ ---
-
+  // --- ★★★ データ保存処理 (LocalStorage) ★★★ ---
   useEffect(() => {
     if (isDataLoaded) {
       localStorage.setItem("cbt_answer_text", answerText);
@@ -171,6 +196,7 @@ function App() {
   useEffect(() => {
     if (isDataLoaded) {
       localStorage.setItem("cbt_time_left", timeLeft.toString());
+      localStorage.setItem("cbt_last_timestamp", Date.now().toString());
     }
   }, [timeLeft, isDataLoaded]);
 
@@ -180,23 +206,143 @@ function App() {
     }
   }, [isTimerActive, isDataLoaded]);
 
-  // PDFが変更されたら保存するハンドラ
+  // --- ★共通: 試験終了処理（PDF生成・ダウンロードのみ。データクリアはしない） ---
+  const processExamFinish = useCallback(
+    async (isAutoSubmit: boolean = false) => {
+      if (
+        !isAutoSubmit &&
+        !window.confirm("試験を終了しますか？答案をダウンロードします。")
+      ) {
+        return;
+      }
+
+      // ★重要: タイマーを止める（入力不可にする）が、データは消さない
+      setIsTimerActive(false);
+      setIsGeneratingPdf(true);
+
+      try {
+        // フォント読み込み (publicフォルダに配置前提)
+        const fontResponse = await fetch("/MPLUS1p-Regular.ttf");
+        if (!fontResponse.ok) throw new Error("Font load failed");
+        const font = await fontResponse.arrayBuffer();
+
+        const answerDoc = new jsPDF({
+          orientation: "p",
+          unit: "mm",
+          format: "a4",
+        });
+
+        const fontBase64 = arrayBufferToBase64(font);
+        answerDoc.addFileToVFS("MPLUS1p-Regular.ttf", fontBase64);
+        answerDoc.addFont("MPLUS1p-Regular.ttf", "MPLUS1p-Regular", "normal");
+        answerDoc.setFont("MPLUS1p-Regular", "normal");
+
+        const margin = 15;
+        const pdfPageWidth = answerDoc.internal.pageSize.getWidth();
+        const pdfPageHeight = answerDoc.internal.pageSize.getHeight();
+        const contentWidth = pdfPageWidth - margin * 2;
+
+        answerDoc.setFontSize(14);
+        answerDoc.text("【答案】", margin, margin);
+        answerDoc.setFontSize(10.5);
+
+        const splitText = answerDoc.splitTextToSize(answerText, contentWidth);
+        let currentY = margin + 10;
+        const lineHeight = 7;
+
+        for (let i = 0; i < splitText.length; i++) {
+          if (currentY + lineHeight > pdfPageHeight - margin) {
+            answerDoc.addPage();
+            currentY = margin;
+          }
+          answerDoc.text(splitText[i], margin, currentY);
+          currentY += lineHeight;
+        }
+
+        const answerPdfBytes = answerDoc.output("arraybuffer");
+        const rawProblemPdf = questionPanelRef.current?.getPdfData();
+        let mergedPdf: PDFDocument;
+
+        if (rawProblemPdf) {
+          mergedPdf = await PDFDocument.load(rawProblemPdf);
+        } else {
+          mergedPdf = await PDFDocument.create();
+        }
+
+        const loadedAnswerPdf = await PDFDocument.load(answerPdfBytes);
+        const copiedPages = await mergedPdf.copyPages(
+          loadedAnswerPdf,
+          loadedAnswerPdf.getPageIndices()
+        );
+        copiedPages.forEach((page) => mergedPdf.addPage(page));
+
+        const pdfBytes = await mergedPdf.save();
+        const blob = new Blob([pdfBytes as unknown as BlobPart], {
+          type: "application/pdf",
+        });
+
+        const link = document.createElement("a");
+        link.href = URL.createObjectURL(blob);
+        link.download = isAutoSubmit
+          ? "cbt-submission-timeout.pdf"
+          : "cbt-submission.pdf";
+        link.click();
+        URL.revokeObjectURL(link.href);
+
+        if (isAutoSubmit) {
+          alert("制限時間になりました。答案をダウンロードしました。");
+        } else {
+          alert("試験終了。答案をダウンロードしました。");
+        }
+      } catch (error) {
+        console.error("PDF generation failed:", error);
+        alert("PDFの生成に失敗しました。");
+      } finally {
+        setIsGeneratingPdf(false);
+      }
+    },
+    [answerText]
+  );
+
+  // --- タイマーが0になった時の自動処理 ---
+  useEffect(() => {
+    // アクティブかつ時間が0になった瞬間に実行
+    if (isTimerActive && timeLeft === 0) {
+      processExamFinish(true);
+    }
+  }, [timeLeft, isTimerActive, processExamFinish]);
+
+  // --- ★重要: PDFが変更されたら「完全リセット」して試験開始 ---
   const handlePdfChange = useCallback((pdfBuffer: ArrayBuffer) => {
     // 1. DBに保存
     savePdfToDB(pdfBuffer).catch((err) =>
       console.error("Failed to save PDF:", err)
     );
+    setInitialPdfData(pdfBuffer);
 
-    // 2. 解答テキストとメモをリセット
+    // 2. 状態の完全初期化
     setAnswerText("");
     setMemoContent("");
 
-    // 3. タイマーを2時間(7200秒)にリセットし、開始状態にする
-    setTimeLeft(7200);
+    // 3. ローカルストレージもクリア
+    localStorage.clear();
+
+    // 4. コンポーネントの強制再マウント用キー更新 (付箋などもリセットされる)
+    setResetKey((prev) => prev + 1);
+
+    // 5. タイマー再設定 & スタート
+    setTimeLeft(20);
     setIsTimerActive(true);
+
+    // 6. 新しい状態をストレージに書き込み開始
+    localStorage.setItem("cbt_answer_text", "");
+    localStorage.setItem("cbt_memo_content", "");
+    localStorage.setItem("cbt_time_left", "20");
+    localStorage.setItem("cbt_timer_active", "true");
+    localStorage.setItem("cbt_last_timestamp", Date.now().toString());
   }, []);
 
-  // --- タイマー処理 ---
+  // --- タイマーカウントダウン処理 ---
   useEffect(() => {
     if (!isTimerActive) return;
 
@@ -213,130 +359,19 @@ function App() {
     return () => clearInterval(timer);
   }, [isTimerActive]);
 
+  // 初回PDFロード時の処理
   const handlePdfLoaded = useCallback(() => {
-    // PDF読み込み完了時(表示完了時)にも念のためタイマー開始を呼ぶ
-    setIsTimerActive(true);
+    // 既にロード済みでタイマーが止まっている(前のセッション)場合などは何もしない
+    // ここは新規アップロードではなく「表示完了」のイベント
   }, []);
 
-  // --- 提出・終了処理 ---
-  const handleFinish = async () => {
-    if (!window.confirm("試験を終了しますか？答案をダウンロードします。")) {
-      return;
-    }
-
-    setIsTimerActive(false);
-    setIsGeneratingPdf(true);
-
-    try {
-      // 1. フォント読み込み
-      // 注意: public/fonts/MPLUS1p-Regular.ttf が存在する必要があります
-      const fontResponse = await fetch("/MPLUS1p-Regular.ttf");
-
-      if (!fontResponse.ok) {
-        throw new Error(
-          `フォントファイルの読み込みに失敗しました (Status: ${fontResponse.status})。\npublic/fonts/MPLUS1p-Regular.ttf が正しく配置されているか確認してください。`
-        );
-      }
-
-      const font = await fontResponse.arrayBuffer();
-
-      // 2. 答案PDF生成
-      const answerDoc = new jsPDF({
-        orientation: "p",
-        unit: "mm",
-        format: "a4",
-      });
-
-      // ★ Buffer.from を自作関数に置き換え (ブラウザ互換性対応)
-      const fontBase64 = arrayBufferToBase64(font);
-
-      answerDoc.addFileToVFS("MPLUS1p-Regular.ttf", fontBase64);
-      answerDoc.addFont("MPLUS1p-Regular.ttf", "MPLUS1p-Regular", "normal");
-      answerDoc.setFont("MPLUS1p-Regular", "normal");
-
-      const margin = 15;
-      const pdfPageWidth = answerDoc.internal.pageSize.getWidth();
-      const pdfPageHeight = answerDoc.internal.pageSize.getHeight();
-      const contentWidth = pdfPageWidth - margin * 2;
-
-      answerDoc.setFontSize(14);
-      answerDoc.text("【答案】", margin, margin);
-      answerDoc.setFontSize(10.5);
-
-      const splitText = answerDoc.splitTextToSize(answerText, contentWidth);
-      let currentY = margin + 10;
-      const lineHeight = 7;
-
-      for (let i = 0; i < splitText.length; i++) {
-        if (currentY + lineHeight > pdfPageHeight - margin) {
-          answerDoc.addPage();
-          currentY = margin;
-        }
-        answerDoc.text(splitText[i], margin, currentY);
-        currentY += lineHeight;
-      }
-
-      const answerPdfBytes = answerDoc.output("arraybuffer");
-
-      // 3. 問題PDFと結合
-      const rawProblemPdf = questionPanelRef.current?.getPdfData();
-      let mergedPdf: PDFDocument;
-
-      if (rawProblemPdf) {
-        mergedPdf = await PDFDocument.load(rawProblemPdf);
-      } else {
-        mergedPdf = await PDFDocument.create();
-      }
-
-      const loadedAnswerPdf = await PDFDocument.load(answerPdfBytes);
-      const copiedPages = await mergedPdf.copyPages(
-        loadedAnswerPdf,
-        loadedAnswerPdf.getPageIndices()
-      );
-
-      copiedPages.forEach((page) => mergedPdf.addPage(page));
-
-      const pdfBytes = await mergedPdf.save();
-      const blob = new Blob([pdfBytes as unknown as BlobPart], {
-        type: "application/pdf",
-      });
-
-      const link = document.createElement("a");
-      link.href = URL.createObjectURL(blob);
-      link.download = "cbt-submission.pdf";
-      link.click();
-      URL.revokeObjectURL(link.href);
-
-      // --- 完了後のデータクリア ---
-
-      // 1. LocalStorage削除
-      localStorage.removeItem("cbt_answer_text");
-      localStorage.removeItem("cbt_memo_content");
-      localStorage.removeItem("cbt_time_left");
-      localStorage.removeItem("cbt_timer_active");
-
-      // 2. IndexedDB削除 (PDF)
-      await clearPdfFromDB();
-
-      // 3. Stateリセット
-      setAnswerText("");
-      setMemoContent("");
-      setTimeLeft(7200);
-      setInitialPdfData(null); // PDF表示もクリア
-
-      alert("答案をダウンロードしました。お疲れ様でした。");
-    } catch (error) {
-      console.error("PDF generation failed:", error);
-      alert(
-        "PDFの生成に失敗しました。\n" +
-          (error instanceof Error ? error.message : String(error))
-      );
-    } finally {
-      setIsGeneratingPdf(false);
-    }
+  // --- 手動終了ボタン用ハンドラ ---
+  const handleFinish = () => {
+    if (timeLeft === 0 || !isTimerActive) return;
+    processExamFinish(false);
   };
 
-  // --- パネル操作系 (変更なし) ---
+  // --- パネル操作系 ---
   const togglePanel = (type: PanelType) => {
     let newPanels = [...visiblePanels];
     if (newPanels.includes(type)) {
@@ -369,11 +404,9 @@ function App() {
 
   useEffect(() => {
     if (!resizingDirection) return;
-
     const handleMouseMove = (e: MouseEvent) => {
       if (!containerRef.current) return;
       const rect = containerRef.current.getBoundingClientRect();
-
       if (resizingDirection === "horizontal") {
         const x = e.clientX - rect.left;
         const widthPercent = (x / rect.width) * 100;
@@ -384,14 +417,11 @@ function App() {
         setVerticalSplit(Math.min(Math.max(heightPercent, 10), 90));
       }
     };
-
     const handleMouseUp = () => {
       setResizingDirection(null);
     };
-
     document.addEventListener("mousemove", handleMouseMove);
     document.addEventListener("mouseup", handleMouseUp);
-
     return () => {
       document.removeEventListener("mousemove", handleMouseMove);
       document.removeEventListener("mouseup", handleMouseUp);
@@ -403,21 +433,29 @@ function App() {
       case PanelType.QUESTION:
         return (
           <MemoizedQuestionPanel
+            key={`qp-${resetKey}`}
             ref={questionPanelRef}
             width={500}
             onPdfLoaded={handlePdfLoaded}
             initialPdfData={initialPdfData}
-            onPdfChange={handlePdfChange}
+            onPdfChange={handlePdfChange} // ★ リセットトリガー
           />
         );
       case PanelType.LAW:
-        return <MemoizedLawPanel colorScheme={colorScheme} />;
+        return (
+          <MemoizedLawPanel
+            key={`lp-${resetKey}`}
+            colorScheme={colorScheme}
+            isExamActive={isTimerActive} // ★ 編集可否フラグ
+          />
+        );
       case PanelType.ANSWER:
         return (
           <MemoizedAnswerPanel
             value={answerText}
             onChange={setAnswerText}
             colorScheme={colorScheme}
+            isExamActive={isTimerActive} // ★ 編集可否フラグ
           />
         );
       default:
@@ -545,6 +583,7 @@ function App() {
             value={memoContent}
             onChange={setMemoContent}
             onClose={() => setShowMemo(false)}
+            isExamActive={isTimerActive} // ★ 編集可否フラグ
           />
         </Box>
 

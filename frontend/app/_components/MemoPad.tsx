@@ -1,4 +1,3 @@
-// _components/MemoPad.tsx
 import React, { useState } from "react";
 import { Paper, Box, TextField, Button, ButtonGroup } from "@mui/material";
 import {
@@ -10,6 +9,8 @@ interface MemoPadProps {
   onClose: () => void;
   value: string;
   onChange: (value: string) => void;
+  // ★ 追加: 試験中判定フラグ
+  isExamActive?: boolean;
 }
 
 type LayoutMode = "left" | "right" | "full";
@@ -18,6 +19,7 @@ export const MemoPad: React.FC<MemoPadProps> = ({
   onClose,
   value,
   onChange,
+  isExamActive = false, // デフォルトfalse
 }) => {
   // 表示モードの状態管理（デフォルトは右配置）
   const [layoutMode, setLayoutMode] = useState<LayoutMode>("right");
@@ -144,12 +146,23 @@ export const MemoPad: React.FC<MemoPadProps> = ({
       </Box>
 
       {/* テキスト入力エリア */}
-      <Box sx={{ flexGrow: 1, p: 2 }}>
+      <Box
+        sx={{
+          flexGrow: 1,
+          p: 2,
+          // ★追加: 無効時は背景色を変更して分かりやすくする
+          bgcolor: isExamActive ? "transparent" : "#f5f5f5",
+        }}
+      >
         <TextField
           multiline
           fullWidth
           variant="standard"
-          placeholder="ここにメモを入力..."
+          // ★追加: 試験中でなければ入力を無効化
+          disabled={!isExamActive}
+          placeholder={
+            isExamActive ? "ここにメモを入力..." : "試験開始まで入力できません"
+          }
           InputProps={{ disableUnderline: true }}
           sx={{
             height: "100%",
@@ -159,6 +172,14 @@ export const MemoPad: React.FC<MemoPadProps> = ({
               height: "100%",
               fontSize: "1rem",
               lineHeight: 1.6,
+              // ★追加: 無効時のカーソルスタイル調整
+              "&.Mui-disabled": {
+                cursor: "not-allowed",
+              },
+            },
+            // ★追加: プレースホルダーの色調整（任意）
+            "& .MuiInputBase-input.Mui-disabled": {
+              WebkitTextFillColor: "rgba(0, 0, 0, 0.38)",
             },
           }}
           value={value}
