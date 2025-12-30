@@ -210,7 +210,7 @@ const TopMain: React.FC<TopMainProps> = ({
     // 号のテキストコンテンツ
     const content = (
       <>
-        {item.ItemTitle}
+        {item.ItemTitle}&nbsp;
         {renderSentences(item.ItemSentence?.Sentence)}
         {renderColumns(item.ItemSentence?.Column)}
         {renderSubitem1(item.Subitem1)}

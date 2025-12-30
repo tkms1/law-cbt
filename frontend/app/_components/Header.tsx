@@ -1,4 +1,4 @@
-// Header.tsx
+"use client";
 import React, { memo, useState } from "react";
 import {
   AppBar,
@@ -10,6 +10,7 @@ import {
   MenuItem,
   ListItemIcon,
   ListItemText,
+  TextField,
 } from "@mui/material";
 import {
   EditNote,
@@ -26,7 +27,7 @@ import {
   Palette,
   FilterAlt,
   HelpOutline,
-  Check, // ▼ 追加
+  Check,
 } from "@mui/icons-material";
 import { ToolbarButton } from "./ToolbarButton";
 import { PanelType, ColorSchemeType } from "../../type/type";
@@ -38,11 +39,11 @@ interface HeaderProps {
   visiblePanels: PanelType[];
   onTogglePanel: (type: PanelType) => void;
   onSwapPanels: () => void;
-  // ▼ 追加: 配色変更用プロップス
   colorScheme: ColorSchemeType;
   onChangeColorScheme: (scheme: ColorSchemeType) => void;
-  onFinish: () => void; // ★ 追加
-  onClick?: (event: React.MouseEvent<HTMLButtonElement>) => void;
+  onFinish: () => void;
+  onTimeChange: (seconds: number) => void;
+  isExamActive: boolean;
 }
 
 export const Header: React.FC<HeaderProps> = memo(
@@ -55,9 +56,15 @@ export const Header: React.FC<HeaderProps> = memo(
     onSwapPanels,
     colorScheme,
     onChangeColorScheme,
-    onFinish, // ★ 受け取り
+    onFinish,
+    onTimeChange,
+    isExamActive,
   }) => {
-    // 時間フォーマット関数
+    // --- 時間変更用のState ---
+    const [isEditingTime, setIsEditingTime] = useState(false);
+    const [editValue, setEditValue] = useState("");
+
+    // 時間フォーマット関数 (HH:MM:SS)
     const formatTime = (seconds: number) => {
       const h = Math.floor(seconds / 3600);
       const m = Math.floor((seconds % 3600) / 60);
@@ -69,7 +76,7 @@ export const Header: React.FC<HeaderProps> = memo(
 
     const isVisible = (type: PanelType) => visiblePanels.includes(type);
 
-    // ▼ 追加: 配色メニュー用のState
+    // 配色メニュー用のState
     const [paletteAnchorEl, setPaletteAnchorEl] = useState<null | HTMLElement>(
       null
     );
@@ -88,6 +95,65 @@ export const Header: React.FC<HeaderProps> = memo(
       handlePaletteClose();
     };
 
+    const handleTimeClick = () => {
+      if (isExamActive) return;
+      setEditValue(formatTime(timeLeft));
+      setIsEditingTime(true);
+    };
+
+    // --- ★追加: 入力値の制御 ---
+    const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+      let val = e.target.value;
+
+      // 1. 全角英数記号を半角に変換
+      // (全角文字コードから 0xFEE0 を引くと半角になります)
+      val = val.replace(/[！-～]/g, (char) =>
+        String.fromCharCode(char.charCodeAt(0) - 0xfee0)
+      );
+
+      // 2. 数字とコロン(:)以外を削除
+      val = val.replace(/[^0-9:]/g, "");
+
+      setEditValue(val);
+    };
+
+    const handleTimeSave = () => {
+      const parts = editValue.split(":").map((part) => parseInt(part, 10));
+      let newSeconds = 0;
+      let valid = true;
+
+      // 数値チェック (handleInputChangeで制限していますが念のため)
+      if (parts.some((num) => isNaN(num))) {
+        valid = false;
+      } else {
+        if (parts.length === 3) {
+          // HH:MM:SS
+          newSeconds = parts[0] * 3600 + parts[1] * 60 + parts[2];
+        } else if (parts.length === 2) {
+          // MM:SS
+          newSeconds = parts[0] * 60 + parts[1];
+        } else if (parts.length === 1) {
+          // 秒のみ
+          newSeconds = parts[0];
+        } else {
+          valid = false;
+        }
+      }
+
+      if (valid && newSeconds >= 0) {
+        onTimeChange(newSeconds);
+      }
+      setIsEditingTime(false);
+    };
+
+    const handleKeyDown = (e: React.KeyboardEvent) => {
+      if (e.key === "Enter") {
+        handleTimeSave();
+      } else if (e.key === "Escape") {
+        setIsEditingTime(false);
+      }
+    };
+
     return (
       <AppBar
         position="static"
@@ -103,9 +169,6 @@ export const Header: React.FC<HeaderProps> = memo(
             <Typography variant="subtitle2" sx={{ fontWeight: "bold" }}>
               司法試験等CBTシステム
             </Typography>
-            {/* <Typography variant="caption" sx={{ opacity: 0.8 }}>
-              論文式 令和７年_司法試験_公法系科目第１問
-            </Typography> */}
           </Box>
 
           <Box sx={{ height: "100%", display: "flex" }}>
@@ -116,7 +179,6 @@ export const Header: React.FC<HeaderProps> = memo(
               onClick={onToggleMemo}
               active={showMemo}
             />
-
             <Box
               sx={{
                 width: "1px",
@@ -126,7 +188,6 @@ export const Header: React.FC<HeaderProps> = memo(
                 my: "auto",
               }}
             />
-
             <ToolbarButton
               icon={<Description sx={{ fontSize: 20 }} />}
               label="問題"
@@ -145,13 +206,11 @@ export const Header: React.FC<HeaderProps> = memo(
               active={isVisible(PanelType.ANSWER)}
               onClick={() => onTogglePanel(PanelType.ANSWER)}
             />
-
             <ToolbarButton
               icon={<SwapHoriz sx={{ fontSize: 20 }} />}
               label="入替え"
               onClick={onSwapPanels}
             />
-
             <Box
               sx={{
                 width: "1px",
@@ -161,7 +220,6 @@ export const Header: React.FC<HeaderProps> = memo(
                 my: "auto",
               }}
             />
-
             <ToolbarButton
               icon={<ContentCopy sx={{ fontSize: 18 }} />}
               label="コピー"
@@ -174,7 +232,6 @@ export const Header: React.FC<HeaderProps> = memo(
               icon={<ContentPaste sx={{ fontSize: 18 }} />}
               label="貼付け"
             />
-
             <Box
               sx={{
                 width: "1px",
@@ -184,7 +241,6 @@ export const Header: React.FC<HeaderProps> = memo(
                 my: "auto",
               }}
             />
-
             <ToolbarButton
               icon={<Translate sx={{ fontSize: 18 }} />}
               label="ローマ字"
@@ -196,7 +252,6 @@ export const Header: React.FC<HeaderProps> = memo(
               label="かな"
               subLabel="入力"
             />
-
             <Box
               sx={{
                 width: "1px",
@@ -206,7 +261,6 @@ export const Header: React.FC<HeaderProps> = memo(
                 my: "auto",
               }}
             />
-
             <ToolbarButton
               icon={<ZoomIn sx={{ fontSize: 18 }} />}
               label="拡大"
@@ -219,15 +273,12 @@ export const Header: React.FC<HeaderProps> = memo(
               icon={<FilterAlt sx={{ fontSize: 18 }} />}
               label="フィルタ"
             />
-
-            {/* ▼ 変更: 配色ボタンの機能実装 */}
             <ToolbarButton
               icon={<Palette sx={{ fontSize: 18 }} />}
               label="配色"
               onClick={handlePaletteClick}
               active={isPaletteOpen}
             />
-
             <ToolbarButton
               icon={<HelpOutline sx={{ fontSize: 18 }} />}
               label="使い方"
@@ -236,7 +287,7 @@ export const Header: React.FC<HeaderProps> = memo(
 
           <Box sx={{ flexGrow: 1 }} />
 
-          {/* Right Side */}
+          {/* Right Side: 残り時間と終了ボタン */}
           <Box
             sx={{
               display: "flex",
@@ -252,19 +303,60 @@ export const Header: React.FC<HeaderProps> = memo(
                 variant="caption"
                 sx={{ display: "block", opacity: 0.8, lineHeight: 1 }}
               >
-                残り時間
+                {isExamActive
+                  ? "残り時間 (試験中は変更不可)"
+                  : "残り時間 (クリックで変更)"}
               </Typography>
-              <Typography
-                variant="h6"
-                sx={{
-                  fontFamily: "monospace",
-                  fontWeight: "bold",
-                  lineHeight: 1,
-                  color: "#ffebee",
-                }}
-              >
-                {formatTime(timeLeft)}
-              </Typography>
+
+              {isEditingTime ? (
+                <TextField
+                  variant="standard"
+                  size="small"
+                  autoFocus
+                  value={editValue}
+                  // ★変更: ここで入力制限処理を呼び出す
+                  onChange={handleInputChange}
+                  onBlur={handleTimeSave}
+                  onKeyDown={handleKeyDown}
+                  placeholder="00:00:00"
+                  slotProps={{
+                    input: {
+                      disableUnderline: true,
+                    },
+                  }}
+                  sx={{
+                    bgcolor: "white",
+                    borderRadius: 1,
+                    width: "120px",
+                    input: {
+                      padding: "4px 8px",
+                      fontSize: "1.25rem",
+                      fontWeight: "bold",
+                      fontFamily: "monospace",
+                      textAlign: "center",
+                      color: "#333",
+                    },
+                  }}
+                />
+              ) : (
+                <Typography
+                  variant="h6"
+                  onClick={handleTimeClick}
+                  sx={{
+                    fontFamily: "monospace",
+                    fontWeight: "bold",
+                    lineHeight: 1,
+                    color: isExamActive ? "#ccc" : "#ffebee",
+                    cursor: isExamActive ? "default" : "pointer",
+                    "&:hover": {
+                      textDecoration: isExamActive ? "none" : "underline",
+                      color: isExamActive ? "#ccc" : "#fff",
+                    },
+                  }}
+                >
+                  {formatTime(timeLeft)}
+                </Typography>
+              )}
             </Box>
             <Button
               variant="contained"
@@ -275,14 +367,13 @@ export const Header: React.FC<HeaderProps> = memo(
                 boxShadow: 2,
                 px: 3,
               }}
-              onClick={onFinish} // ★ 追加
+              onClick={onFinish}
             >
               終了
             </Button>
           </Box>
         </Toolbar>
 
-        {/* ▼ 追加: 配色選択メニュー */}
         <Menu
           anchorEl={paletteAnchorEl}
           open={isPaletteOpen}

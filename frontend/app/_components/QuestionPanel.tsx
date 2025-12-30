@@ -799,7 +799,8 @@ export const QuestionPanel = forwardRef<QuestionPanelRef, QuestionPanelProps>(
           <DialogTitle>PDFの読み込み確認</DialogTitle>
           <DialogContent>
             <DialogContentText>
-              {pendingFile && `「${pendingFile.name}」を読み込んで試験を開始しますか？`}
+              {pendingFile &&
+                `「${pendingFile.name}」を読み込んで試験を開始しますか？`}
             </DialogContentText>
           </DialogContent>
           <DialogActions>
