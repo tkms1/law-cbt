@@ -14,6 +14,9 @@ const MemoizedQuestionPanel = memo(QuestionPanel);
 const MemoizedLawPanel = memo(LawPanel);
 const MemoizedAnswerPanel = memo(AnswerPanel);
 
+// --- 定数: デフォルトの試験時間 (2時間20分 = 8400秒) ---
+const DEFAULT_DURATION = 2 * 3600 + 20 * 60;
+
 // --- ヘルパー関数: ArrayBuffer を Base64 文字列に変換 ---
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
   let binary = "";
@@ -115,9 +118,15 @@ function App() {
   const [showMemo, setShowMemo] = useState(false);
   const [colorScheme, setColorScheme] = useState<ColorSchemeType>("none");
 
-  // タイマー設定 (初期値20秒)
-  const [timeLeft, setTimeLeft] = useState(20);
+  // タイマー設定 (初期値は一旦0にしてuseEffectで設定)
+  const [timeLeft, setTimeLeft] = useState(0);
   const [isTimerActive, setIsTimerActive] = useState(false);
+
+  // handlePdfChange 内で最新の時間を参照するための Ref
+  const timeLeftRef = useRef(timeLeft);
+  useEffect(() => {
+    timeLeftRef.current = timeLeft;
+  }, [timeLeft]);
 
   // --- ★★★ データ読み込み処理 (LocalStorage & IndexedDB) ★★★ ---
   useEffect(() => {
@@ -127,12 +136,20 @@ function App() {
       const savedTime = localStorage.getItem("cbt_time_left");
       const savedIsActive = localStorage.getItem("cbt_timer_active");
       const savedTimestamp = localStorage.getItem("cbt_last_timestamp");
+      const savedDefaultDuration = localStorage.getItem("cbt_default_duration");
 
-      let calculatedTimeLeft = 20;
+      // ★デフォルト時間の決定 (保存されていなければ定数を使用)
+      const defaultDuration = savedDefaultDuration
+        ? parseInt(savedDefaultDuration, 10)
+        : DEFAULT_DURATION;
+
+      let calculatedTimeLeft = defaultDuration; // 基本はデフォルト値
       let shouldExpire = false;
 
-      // タイマー経過計算
-      if (savedTime && savedTimestamp) {
+      // ★修正: 試験途中データの復元計算
+      // 以前は savedTime があれば無条件で時間を減算していましたが、
+      // savedIsActive === "true" (試験中) の場合のみ時間を進めるように修正しました。
+      if (savedTime && savedTimestamp && savedIsActive === "true") {
         const storedTimeLeft = parseInt(savedTime, 10);
         const lastSavedTime = parseInt(savedTimestamp, 10);
         const now = Date.now();
@@ -146,13 +163,14 @@ function App() {
           calculatedTimeLeft = realRemainingTime;
         }
       } else if (savedTime) {
+        // ★追加: 試験中ではなかった(リロードや閉じていた)場合、保存されていた時間をそのまま使う
         const parsedTime = parseInt(savedTime, 10);
-        if (!isNaN(parsedTime) && parsedTime > 0) {
+        if (!isNaN(parsedTime)) {
           calculatedTimeLeft = parsedTime;
         }
       }
 
-      // 復元処理
+      // Stateへの反映
       if (savedAnswer) setAnswerText(savedAnswer);
       if (savedMemo) setMemoContent(savedMemo);
       setTimeLeft(calculatedTimeLeft);
@@ -206,7 +224,15 @@ function App() {
     }
   }, [isTimerActive, isDataLoaded]);
 
-  // --- ★共通: 試験終了処理（PDF生成・ダウンロードのみ。データクリアはしない） ---
+  // --- ★ 時間を手動変更するハンドラ ---
+  const handleTimeChange = useCallback((newSeconds: number) => {
+    setTimeLeft(newSeconds);
+    localStorage.setItem("cbt_time_left", newSeconds.toString());
+    // ★変更: ユーザーが設定した時間を「次のデフォルト」として保存
+    localStorage.setItem("cbt_default_duration", newSeconds.toString());
+  }, []);
+
+  // --- ★共通: 試験終了処理 ---
   const processExamFinish = useCallback(
     async (isAutoSubmit: boolean = false) => {
       if (
@@ -216,12 +242,11 @@ function App() {
         return;
       }
 
-      // ★重要: タイマーを止める（入力不可にする）が、データは消さない
+      // タイマーを止める
       setIsTimerActive(false);
       setIsGeneratingPdf(true);
 
       try {
-        // フォント読み込み (publicフォルダに配置前提)
         const fontResponse = await fetch("/MPLUS1p-Regular.ttf");
         if (!fontResponse.ok) throw new Error("Font load failed");
         const font = await fontResponse.arrayBuffer();
@@ -289,6 +314,28 @@ function App() {
         link.click();
         URL.revokeObjectURL(link.href);
 
+        // --- クリーンアップ処理 ---
+        await clearPdfFromDB();
+
+        // ★重要: デフォルト時間設定を退避してからクリアする
+        const savedDefaultDuration = localStorage.getItem(
+          "cbt_default_duration"
+        );
+
+        setInitialPdfData(null);
+        setAnswerText("");
+        setMemoContent("");
+        localStorage.clear();
+
+        // ★重要: デフォルト時間設定を復元
+        if (savedDefaultDuration) {
+          localStorage.setItem("cbt_default_duration", savedDefaultDuration);
+        }
+
+        setResetKey((prev) => prev + 1);
+
+        console.log("Exam finished. PDF removed from DB and Screen.");
+
         if (isAutoSubmit) {
           alert("制限時間になりました。答案をダウンロードしました。");
         } else {
@@ -320,25 +367,41 @@ function App() {
     );
     setInitialPdfData(pdfBuffer);
 
+    // ★重要: デフォルト時間設定を取得（なければ定数）
+    const savedDefaultDuration = localStorage.getItem("cbt_default_duration");
+    const nextTime = savedDefaultDuration
+      ? parseInt(savedDefaultDuration, 10)
+      : DEFAULT_DURATION;
+
     // 2. 状態の完全初期化
     setAnswerText("");
     setMemoContent("");
 
-    // 3. ローカルストレージもクリア
+    // 3. ローカルストレージもクリア（ただしデフォルト時間は維持したい）
     localStorage.clear();
+    if (savedDefaultDuration) {
+      localStorage.setItem("cbt_default_duration", savedDefaultDuration);
+    }
 
-    // 4. コンポーネントの強制再マウント用キー更新 (付箋などもリセットされる)
+    // 4. コンポーネントの強制再マウント用キー更新
     setResetKey((prev) => prev + 1);
 
     // 5. タイマー再設定 & スタート
-    setTimeLeft(20);
-    setIsTimerActive(true);
+    setTimeLeft(nextTime);
 
-    // 6. 新しい状態をストレージに書き込み開始
+    // ★重要: 時間がセットされている場合のみ試験開始（タイマー始動）
+    if (nextTime > 0) {
+      setIsTimerActive(true);
+      localStorage.setItem("cbt_timer_active", "true");
+    } else {
+      setIsTimerActive(false);
+      localStorage.setItem("cbt_timer_active", "false");
+    }
+
+    // 6. 新しい状態をストレージに書き込み
     localStorage.setItem("cbt_answer_text", "");
     localStorage.setItem("cbt_memo_content", "");
-    localStorage.setItem("cbt_time_left", "20");
-    localStorage.setItem("cbt_timer_active", "true");
+    localStorage.setItem("cbt_time_left", nextTime.toString());
     localStorage.setItem("cbt_last_timestamp", Date.now().toString());
   }, []);
 
@@ -359,19 +422,13 @@ function App() {
     return () => clearInterval(timer);
   }, [isTimerActive]);
 
-  // 初回PDFロード時の処理
-  const handlePdfLoaded = useCallback(() => {
-    // 既にロード済みでタイマーが止まっている(前のセッション)場合などは何もしない
-    // ここは新規アップロードではなく「表示完了」のイベント
-  }, []);
+  const handlePdfLoaded = useCallback(() => {}, []);
 
-  // --- 手動終了ボタン用ハンドラ ---
   const handleFinish = () => {
     if (timeLeft === 0 || !isTimerActive) return;
     processExamFinish(false);
   };
 
-  // --- パネル操作系 ---
   const togglePanel = (type: PanelType) => {
     let newPanels = [...visiblePanels];
     if (newPanels.includes(type)) {
@@ -438,7 +495,7 @@ function App() {
             width={500}
             onPdfLoaded={handlePdfLoaded}
             initialPdfData={initialPdfData}
-            onPdfChange={handlePdfChange} // ★ リセットトリガー
+            onPdfChange={handlePdfChange}
           />
         );
       case PanelType.LAW:
@@ -446,7 +503,7 @@ function App() {
           <MemoizedLawPanel
             key={`lp-${resetKey}`}
             colorScheme={colorScheme}
-            isExamActive={isTimerActive} // ★ 編集可否フラグ
+            isExamActive={isTimerActive}
           />
         );
       case PanelType.ANSWER:
@@ -455,7 +512,7 @@ function App() {
             value={answerText}
             onChange={setAnswerText}
             colorScheme={colorScheme}
-            isExamActive={isTimerActive} // ★ 編集可否フラグ
+            isExamActive={isTimerActive}
           />
         );
       default:
@@ -487,6 +544,8 @@ function App() {
         colorScheme={colorScheme}
         onFinish={handleFinish}
         onChangeColorScheme={setColorScheme}
+        onTimeChange={handleTimeChange}
+        isExamActive={isTimerActive}
       />
 
       <Box
@@ -583,7 +642,7 @@ function App() {
             value={memoContent}
             onChange={setMemoContent}
             onClose={() => setShowMemo(false)}
-            isExamActive={isTimerActive} // ★ 編集可否フラグ
+            isExamActive={isTimerActive}
           />
         </Box>
 
