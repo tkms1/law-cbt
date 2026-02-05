@@ -50,6 +50,9 @@ export async function GET(request: Request) {
     lawId == "h12Zj000030201ja14.0_h18R2" ||
     lawId == "s23Zj000320201ja14.0_h20R17"
   ) {
+    // fetchUrl = `https://ghdadlyzbc.execute-api.ap-northeast-1.amazonaws.com/node?lawId=${encodeURIComponent(
+    //   lawId
+    // )}`;
     fetchUrl = `https://roppou-app.onrender.com/xml-file?code=${encodeURIComponent(
       lawId
     )}`;
@@ -57,6 +60,9 @@ export async function GET(request: Request) {
     //   lawId
     // )}`;
   } else {
+    // fetchUrl = `https://ghdadlyzbc.execute-api.ap-northeast-1.amazonaws.com/node?lawId=${encodeURIComponent(
+    //   lawId
+    // )}`;
     fetchUrl = `https://roppou-app.onrender.com/xml?code=${encodeURIComponent(
       lawId
     )}`;

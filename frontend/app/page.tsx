@@ -118,9 +118,12 @@ function App() {
   const [showMemo, setShowMemo] = useState(false);
   const [colorScheme, setColorScheme] = useState<ColorSchemeType>("none");
 
-  // タイマー設定 (初期値は一旦0にしてuseEffectで設定)
+  // タイマー設定
   const [timeLeft, setTimeLeft] = useState(0);
   const [isTimerActive, setIsTimerActive] = useState(false);
+
+  // ★追加: 終了予定時刻を保持するRef (タブ切り替え時のズレ防止用)
+  const endTimeRef = useRef<number | null>(null);
 
   // handlePdfChange 内で最新の時間を参照するための Ref
   const timeLeftRef = useRef(timeLeft);
@@ -146,9 +149,6 @@ function App() {
       let calculatedTimeLeft = defaultDuration; // 基本はデフォルト値
       let shouldExpire = false;
 
-      // ★修正: 試験途中データの復元計算
-      // 以前は savedTime があれば無条件で時間を減算していましたが、
-      // savedIsActive === "true" (試験中) の場合のみ時間を進めるように修正しました。
       if (savedTime && savedTimestamp && savedIsActive === "true") {
         const storedTimeLeft = parseInt(savedTime, 10);
         const lastSavedTime = parseInt(savedTimestamp, 10);
@@ -163,7 +163,6 @@ function App() {
           calculatedTimeLeft = realRemainingTime;
         }
       } else if (savedTime) {
-        // ★追加: 試験中ではなかった(リロードや閉じていた)場合、保存されていた時間をそのまま使う
         const parsedTime = parseInt(savedTime, 10);
         if (!isNaN(parsedTime)) {
           calculatedTimeLeft = parsedTime;
@@ -228,7 +227,6 @@ function App() {
   const handleTimeChange = useCallback((newSeconds: number) => {
     setTimeLeft(newSeconds);
     localStorage.setItem("cbt_time_left", newSeconds.toString());
-    // ★変更: ユーザーが設定した時間を「次のデフォルト」として保存
     localStorage.setItem("cbt_default_duration", newSeconds.toString());
   }, []);
 
@@ -244,6 +242,7 @@ function App() {
 
       // タイマーを止める
       setIsTimerActive(false);
+      endTimeRef.current = null; // Refもクリア
       setIsGeneratingPdf(true);
 
       try {
@@ -332,6 +331,14 @@ function App() {
           localStorage.setItem("cbt_default_duration", savedDefaultDuration);
         }
 
+        if (isAutoSubmit) {
+          // タイムアップ(自動終了)の場合は、次回のためにデフォルト時間に戻す
+          const nextTime = savedDefaultDuration
+            ? parseInt(savedDefaultDuration, 10)
+            : DEFAULT_DURATION;
+          setTimeLeft(nextTime);
+        }
+
         setResetKey((prev) => prev + 1);
 
         console.log("Exam finished. PDF removed from DB and Screen.");
@@ -392,9 +399,12 @@ function App() {
     // ★重要: 時間がセットされている場合のみ試験開始（タイマー始動）
     if (nextTime > 0) {
       setIsTimerActive(true);
+      // ★修正: リセット時は必ず新しいターゲット時間を設定する
+      endTimeRef.current = Date.now() + nextTime * 1000;
       localStorage.setItem("cbt_timer_active", "true");
     } else {
       setIsTimerActive(false);
+      endTimeRef.current = null;
       localStorage.setItem("cbt_timer_active", "false");
     }
 
@@ -405,26 +415,43 @@ function App() {
     localStorage.setItem("cbt_last_timestamp", Date.now().toString());
   }, []);
 
-  // --- タイマーカウントダウン処理 ---
+  // --- ★修正: タイマーカウントダウン処理 (差分計算方式) ---
   useEffect(() => {
-    if (!isTimerActive) return;
+    if (!isTimerActive) {
+      // 非アクティブになったらターゲット時間をクリア
+      endTimeRef.current = null;
+      return;
+    }
+
+    // タイマー開始時（再開時）にターゲット時間が未設定なら設定
+    if (endTimeRef.current === null) {
+      endTimeRef.current = Date.now() + timeLeft * 1000;
+    }
 
     const timer = setInterval(() => {
-      setTimeLeft((prev) => {
-        if (prev <= 0) {
+      if (endTimeRef.current !== null) {
+        const now = Date.now();
+        // 残り時間 = 終了予定時刻 - 現在時刻
+        const diff = Math.ceil((endTimeRef.current - now) / 1000);
+        const nextTime = diff > 0 ? diff : 0;
+
+        setTimeLeft(nextTime);
+
+        if (nextTime <= 0) {
           clearInterval(timer);
-          return 0;
         }
-        return prev - 1;
-      });
-    }, 1000);
+      }
+    }, 500); // 1000msより短くすることで表示更新のズレを目立たなくする
 
     return () => clearInterval(timer);
+    // timeLeftは依存配列に入れない (無限ループ防止)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isTimerActive]);
 
   const handlePdfLoaded = useCallback(() => {}, []);
 
   const handleFinish = () => {
+    // タイマーが止まっている場合や時間が0の場合は手動終了させない（重複防止）
     if (timeLeft === 0 || !isTimerActive) return;
     processExamFinish(false);
   };

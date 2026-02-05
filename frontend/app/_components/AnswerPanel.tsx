@@ -28,6 +28,7 @@ export const AnswerPanel: React.FC<AnswerPanelProps> = ({
   const safeValue = value || "";
   const charCount = safeValue.length;
 
+  // IME入力中かどうかを判定するフラグ
   const isComposing = useRef(false);
 
   const lineHeight = 32;
@@ -123,12 +124,16 @@ export const AnswerPanel: React.FC<AnswerPanelProps> = ({
     "& .MuiSvgIcon-root": { fontSize: 18 },
   };
 
+  // 入力された値を整形して親コンポーネントに通知する処理
   const processInput = (inputValue: string) => {
     let newVal = inputValue;
+    // 半角英数字記号を全角に変換
     newVal = newVal.replace(/[!-~]/g, (s) =>
       String.fromCharCode(s.charCodeAt(0) + 0xfee0)
     );
+    // 半角スペースを全角スペースに変換
     newVal = newVal.replace(/ /g, "\u3000");
+    // 許可された文字以外を除去
     newVal = newVal.replace(
       /[^０-９Ａ-Ｚａ-ｚぁ-んァ-ヶー\u4E00-\u9FFF\u3005-\u3007\u3000\n、。！？「」『』・：；（）①-⑳⑴-⒇ⅰ-ⅿ]/g,
       ""
@@ -142,11 +147,27 @@ export const AnswerPanel: React.FC<AnswerPanelProps> = ({
   };
 
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    // IME入力中の場合は、React側での制御（変換）を行わずそのまま反映する
+    // これにより入力中の確定前文字が勝手に変換されたり重複するのを防ぐ
     if (isComposing.current) {
       onChange(e.target.value);
       return;
     }
     processInput(e.target.value);
+  };
+
+  // ★追加: IME入力開始イベント
+  const handleCompositionStart = () => {
+    isComposing.current = true;
+  };
+
+  // ★追加: IME入力終了（確定）イベント
+  const handleCompositionEnd = (
+    e: React.CompositionEvent<HTMLTextAreaElement>
+  ) => {
+    isComposing.current = false;
+    // 入力が確定したタイミングで、最終的な値を整形ロジックに通す
+    processInput(e.currentTarget.value);
   };
 
   const displayLines = safeValue.split("\n");
@@ -213,7 +234,6 @@ export const AnswerPanel: React.FC<AnswerPanelProps> = ({
         </Typography>
 
         <Stack direction="row" spacing={1}>
-          {/* 試験中でない場合、ツールボタンも無効化 */}
           <Button
             startIcon={<Search />}
             sx={toolButtonStyle}
@@ -316,8 +336,10 @@ export const AnswerPanel: React.FC<AnswerPanelProps> = ({
               ref={textareaRef}
               onScroll={handleScroll}
               maxLength={MAX_TOTAL_CHARS}
+              // ★修正ポイント: Compositionイベントを紐付け
+              onCompositionStart={handleCompositionStart}
+              onCompositionEnd={handleCompositionEnd}
               onChange={handleChange}
-              // ★ 読み取り専用設定
               readOnly={!isExamActive}
               placeholder={
                 isExamActive
