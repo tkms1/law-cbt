@@ -50,6 +50,11 @@ interface StickyNote {
   createdAt: number; // ソート用
 }
 
+// --- 定数定義 ---
+const STORAGE_KEY_STICKY = "cbt_sticky_notes";
+const STORAGE_KEY_LAST_LAW_ID = "cbt_last_law_id";
+const STORAGE_KEY_LAST_LAW_NAME = "cbt_last_law_name";
+
 // --- ユーティリティ ---
 const numberToKanji = (num: number): string => {
   if (num === 0) return "";
@@ -182,17 +187,14 @@ const getColorStyles = (scheme: ColorSchemeType) => {
   }
 };
 
-const STORAGE_KEY = "cbt_sticky_notes";
-
 interface LawPanelProps {
   colorScheme?: ColorSchemeType;
-  // ★ 修正: 試験中かどうか判定するフラグ
   isExamActive?: boolean;
 }
 
 export const LawPanel: React.FC<LawPanelProps> = ({
   colorScheme = "none",
-  isExamActive = false, // デフォルトfalse
+  isExamActive = false,
 }) => {
   const [sidebarWidth, setSidebarWidth] = useState(260);
   const [isResizing, setIsResizing] = useState(false);
@@ -201,12 +203,26 @@ export const LawPanel: React.FC<LawPanelProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
 
-  const [selectedLawId, setSelectedLawId] = useState("018"); // 初期値
-  const [selectedLawName, setSelectedLawName] = useState("民法"); // 初期名称
+  // ★ 修正1: useStateの初期値でlocalStorageから読み込む
+  const [selectedLawId, setSelectedLawId] = useState(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem(STORAGE_KEY_LAST_LAW_ID) || "018";
+    }
+    return "018";
+  });
+
+  const [selectedLawName, setSelectedLawName] = useState(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem(STORAGE_KEY_LAST_LAW_NAME) || "民法";
+    }
+    return "民法";
+  });
+
   const [lawData, setLawData] = useState<LawData>();
   const [tocSearchQuery, setTocSearchQuery] = useState("");
   const [articleNum, setArticleNum] = useState("");
   const [branchNum, setBranchNum] = useState("");
+
   const [openCategories, setOpenCategories] = useState<{
     [key: string]: boolean;
   }>({
@@ -226,10 +242,54 @@ export const LawPanel: React.FC<LawPanelProps> = ({
   const styles = getColorStyles(colorScheme);
   const isDark = colorScheme === "black";
 
-  // LocalStorageからロード (マウント時のみ)
+  // ★ 修正2: 法令データ取得関数を useCallback で定義 (useEffectで呼ぶため)
+  const fetchLawData = useCallback(async (lawId: string) => {
+    setLawData(undefined); // ローディング状態を作るために一旦クリア
+    try {
+      // const res = await fetch(`https://law-cbt.vercel.app/api?lawId=${lawId}`);
+      // const res = await fetch(
+      //   `https://ghdadlyzbc.execute-api.ap-northeast-1.amazonaws.com/node?lawId=${lawId}`
+      // );
+      const res = await fetch(`http://localhost:3000/api?lawId=${lawId}`);
+      if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+      const json = await res.json();
+      setLawData(json);
+    } catch (error) {
+      console.error("Fetch error:", error);
+    }
+  }, []);
+
+  // ★ 修正3: マウント時に復元されたIDでデータを取得し、サイドバーを開く
+  useEffect(() => {
+    // 1. データ取得
+    fetchLawData(selectedLawId);
+
+    // 2. サイドバーの該当カテゴリを開く
+    for (const category of accordionItems) {
+      const found = category.buttons.find(
+        (b) => b.link.replace(/^\//, "") === selectedLawId
+      );
+      if (found) {
+        setOpenCategories((prev) => ({
+          ...prev,
+          [category.summary]: true,
+        }));
+        break;
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // 初回のみ実行
+
+  // ★ 修正4: 法令が変更されたら localStorage に保存
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY_LAST_LAW_ID, selectedLawId);
+    localStorage.setItem(STORAGE_KEY_LAST_LAW_NAME, selectedLawName);
+  }, [selectedLawId, selectedLawName]);
+
+  // LocalStorageから付箋をロード (マウント時のみ)
   useEffect(() => {
     try {
-      const saved = localStorage.getItem(STORAGE_KEY);
+      const saved = localStorage.getItem(STORAGE_KEY_STICKY);
       if (saved) {
         setStickyNotes(JSON.parse(saved));
       }
@@ -240,11 +300,11 @@ export const LawPanel: React.FC<LawPanelProps> = ({
     }
   }, []);
 
-  // LocalStorageへ保存 (変更時)
+  // LocalStorageへ付箋を保存 (変更時)
   useEffect(() => {
     if (isStickyLoaded) {
       try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(stickyNotes));
+        localStorage.setItem(STORAGE_KEY_STICKY, JSON.stringify(stickyNotes));
       } catch (e) {
         console.error("Failed to save sticky notes", e);
       }
@@ -314,7 +374,6 @@ export const LawPanel: React.FC<LawPanelProps> = ({
   // 付箋のトグル処理
   const handleToggleSticky = useCallback(
     (id: string) => {
-      // ★ 修正: 試験中でなければ処理を中断
       if (!isExamActive) return;
 
       setStickyNotes((prev) => {
@@ -355,23 +414,8 @@ export const LawPanel: React.FC<LawPanelProps> = ({
         }
       });
     },
-    [selectedLawId, selectedLawName, isExamActive] // dependencyにisExamActiveを追加
+    [selectedLawId, selectedLawName, isExamActive]
   );
-
-  // 法令データ取得
-  const fetchLawData = async (lawId: string) => {
-    // ★重要: 古いデータを一旦クリアして、ID重複や描画待ちを防ぐ
-    setLawData(undefined);
-    try {
-      // const res = await fetch(`https://law-cbt.vercel.app/api?lawId=${lawId}`);
-      const res = await fetch(`http://localhost:3000/api?lawId=${lawId}`);
-      if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
-      const json = await res.json();
-      setLawData(json);
-    } catch (error) {
-      console.error("Fetch error:", error);
-    }
-  };
 
   const handleLawClick = async (lawName: string) => {
     let foundButton: ButtonItem | undefined;
@@ -418,7 +462,6 @@ export const LawPanel: React.FC<LawPanelProps> = ({
       setSelectedLawId(note.lawId);
       setSelectedLawName(note.lawName);
       setPendingScrollId(domId);
-      // fetchLawData内でデータクリアされるため、useEffectのポーリングが正しく機能する
       await fetchLawData(note.lawId);
     } else {
       // 同一法令内の場合
@@ -427,7 +470,6 @@ export const LawPanel: React.FC<LawPanelProps> = ({
   };
 
   // 自動スクロール (useEffect)
-  // 法令データ切り替え後の描画待ちに対応するため、ポーリング(リトライ)を行う
   useEffect(() => {
     if (!pendingScrollId || !lawData) return;
 
@@ -454,10 +496,8 @@ export const LawPanel: React.FC<LawPanelProps> = ({
       }
     };
 
-    // 処理開始
     scrollLoop();
 
-    // クリーンアップ
     return () => clearTimeout(timeoutId);
   }, [lawData, pendingScrollId]);
 
@@ -677,7 +717,6 @@ export const LawPanel: React.FC<LawPanelProps> = ({
             variant="contained"
             size="small"
             onClick={() => setIsStickyListOpen(true)}
-            // ★ 修正: 試験中でなければボタンを無効化
             disabled={!isExamActive}
             sx={{
               bgcolor: "#b45309",

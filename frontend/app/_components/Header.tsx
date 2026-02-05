@@ -101,20 +101,33 @@ export const Header: React.FC<HeaderProps> = memo(
       setIsEditingTime(true);
     };
 
-    // --- ★追加: 入力値の制御 ---
+    // --- ★修正: 入力値の制御 (カーソル位置飛び対策) ---
     const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-      let val = e.target.value;
+      const input = e.target;
 
-      // 1. 全角英数記号を半角に変換
-      // (全角文字コードから 0xFEE0 を引くと半角になります)
+      // 1. 入力直後のカーソル位置を記憶
+      const start = input.selectionStart;
+      const end = input.selectionEnd;
+
+      let val = input.value;
+
+      // 2. 全角英数記号を半角に変換
       val = val.replace(/[！-～]/g, (char) =>
         String.fromCharCode(char.charCodeAt(0) - 0xfee0)
       );
 
-      // 2. 数字とコロン(:)以外を削除
+      // 3. 数字とコロン(:)以外を削除
       val = val.replace(/[^0-9:]/g, "");
 
       setEditValue(val);
+
+      // 4. Reactの再レンダリング後にカーソル位置を復元
+      // requestAnimationFrameを使うことでDOM更新の直後に実行されるようにする
+      if (start !== null && end !== null) {
+        window.requestAnimationFrame(() => {
+          input.setSelectionRange(start, end);
+        });
+      }
     };
 
     const handleTimeSave = () => {
@@ -314,7 +327,6 @@ export const Header: React.FC<HeaderProps> = memo(
                   size="small"
                   autoFocus
                   value={editValue}
-                  // ★変更: ここで入力制限処理を呼び出す
                   onChange={handleInputChange}
                   onBlur={handleTimeSave}
                   onKeyDown={handleKeyDown}
